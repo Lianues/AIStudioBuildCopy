@@ -19,3 +19,5 @@ __pycache__/
 
 # Documentation
 /README.md
+/gemini格式api调用.md
+/ai的TSCli系统提示词.md

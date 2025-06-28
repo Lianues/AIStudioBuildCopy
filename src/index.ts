@@ -76,12 +76,13 @@ async function main() {
             const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
             const xmlContent = extractXml(responseText);
 
+            console.log(chalk.blue('AI Response:')); // 始终打印 AI Response:
+
             if (xmlContent) {
                 const parts = responseText.split(xmlContent);
                 const beforeXml = parts[0].trim();
                 const afterXml = parts.length > 1 ? parts[1].trim() : '';
 
-                // Clean up potential markdown fences before printing
                 if (beforeXml) {
                     console.log(beforeXml.replace(/```xml\s*$/, '').trim());
                 }
@@ -98,13 +99,10 @@ async function main() {
                 console.log(chalk.yellow('-----------------------'));
                 
                 if (afterXml) {
-                    // Clean up potential closing markdown fence
                     console.log(afterXml.replace(/^\s*```/, '').trim());
                 }
-
             } else {
-                // If no XML is found, it's a purely conversational response.
-                console.log("AI Response:", responseText);
+                console.log(responseText);
             }
         } catch (error) {
             console.error("An error occurred:", error);
