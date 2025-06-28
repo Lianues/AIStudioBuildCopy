@@ -61,27 +61,50 @@ async function main() {
                     systemInstruction: systemInstruction,
                 }
             };
-            // console.log("==================== Full Request to AI (Emulated) ====================");
-            // console.log(JSON.stringify(fullRequestForLogging, null, 2));
-            // console.log("=====================================================================");
+            console.log("==================== Full Request to AI (Emulated) ====================");
+            console.log(JSON.stringify(fullRequestForLogging, null, 2));
+            console.log("=====================================================================");
             */
 
             const result = await chat.sendMessage({ message: fullPromptString });
 
-            // NOTE: The following block is for debugging. Uncomment to see the full response body from the AI.
-            /*
+            // Log the full response body for debugging
             console.log("==================== Full AI Response Body =====================");
             console.log(JSON.stringify(result, null, 2));
             console.log("=============================================================");
-            */
-            const responseText = result.text;
-            const aiResponse = extractXml(responseText ?? '');
-            
-            if (aiResponse) {
-                await applyChanges(aiResponse, projectPath);
-                console.log("Changes have been successfully applied.");
+
+            const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+            const xmlContent = extractXml(responseText);
+
+            if (xmlContent) {
+                const parts = responseText.split(xmlContent);
+                const beforeXml = parts[0].trim();
+                const afterXml = parts.length > 1 ? parts[1].trim() : '';
+
+                // Clean up potential markdown fences before printing
+                if (beforeXml) {
+                    console.log(beforeXml.replace(/```xml\s*$/, '').trim());
+                }
+
+                const appliedChanges = await applyChanges(xmlContent, projectPath);
+                
+                const chalk = (await import('chalk')).default;
+                console.log(chalk.yellow('--- Applied Changes ---'));
+                for (const change of appliedChanges) {
+                    console.log(chalk.green(`${change.file}:`));
+                    console.log(chalk.cyan(`  ${change.description}`));
+                    console.log(chalk.dim(`  Successfully applied change to: ${change.fullPath}`));
+                }
+                console.log(chalk.yellow('-----------------------'));
+                
+                if (afterXml) {
+                    // Clean up potential closing markdown fence
+                    console.log(afterXml.replace(/^\s*```/, '').trim());
+                }
+
             } else {
-                console.log("AI did not return any changes.");
+                // If no XML is found, it's a purely conversational response.
+                console.log("AI Response:", responseText);
             }
         } catch (error) {
             console.error("An error occurred:", error);

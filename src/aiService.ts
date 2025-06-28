@@ -4,9 +4,6 @@
  * @returns The extracted XML string, or an empty string if not found.
  */
 export function extractXml(text: string): string {
-    if (text.startsWith('<')) {
-        return text;
-    }
-    const match = text.match(/```xml\n([\s\S]*?)```/);
-    return match ? match[1].trim() : '';
+    const match = text.match(/<changes>[\s\S]*?<\/changes>/);
+    return match ? match[0].trim() : '';
 }
