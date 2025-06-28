@@ -1,0 +1,21 @@
+# Dependencies
+/node_modules
+
+# Build output
+/dist
+
+# Git folder
+/.git/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Env files
+.env
+
+# Dependency lock file
+/package-lock.json
+
+# Documentation
+/README.md
