@@ -1,0 +1,21 @@
+{
+  // 是否显示本轮对话的token消耗提示
+  "displayTokenConsumption": {
+    // 是否启用token消耗提示功能
+    "enabled": true,
+    // 显示哪些类型的token消耗：
+    // "input": 输入token
+    // "output": 输出token
+    // "total": 总token
+    // "thoughts": 思考过程的token
+    "displayTypes": ["input", "output", "total", "thoughts"]
+  },
+  // 在调用AI时附带的历史对话上下文的最大条数
+  // -1: 附带所有历史记录
+  // 0: 不附带历史记录，只发送用户当前请求
+  // >0: 附带指定条数的历史记录
+  "maxContextHistoryTurns": -1,
+  // 是否启用代码上下文优化功能
+  // 启用后，如果检测到用户提交的代码与历史记录中的代码一致，将精简历史记录以减少token消耗
+  "optimizeCodeContext": true
+}

@@ -44,9 +44,9 @@ async function readFilesRecursively(dir: string, projectDir: string, ignorePatte
 /**
  * Reads all files in a project directory and formats their content into a single summary string.
  * @param projectDir The path to the project directory.
- * @returns A promise that resolves to the formatted project summary string.
+ * @returns A promise that resolves to the formatted project summary string and a map of file contents.
  */
-export async function createProjectSummary(projectDir: string): Promise<{ summary: string; includedFiles: string[] }> {
+export async function createProjectSummary(projectDir: string): Promise<{ summary: string; includedFiles: string[]; fileContentsMap: { [filePath: string]: string } }> {
     let ignorePatterns: string[] = [];
     try {
         const ignoreFilePath = path.join(projectDir, '.aiignore');
@@ -82,9 +82,12 @@ export async function createProjectSummary(projectDir: string): Promise<{ summar
     try {
         const files = await readFilesRecursively(projectDir, projectDir, ignorePatterns);
         const includedFiles: string[] = [];
+        const fileContentsMap: { [filePath: string]: string } = {};
+
         const summaryBlocks = files.map(file => {
             if (file) {
                 includedFiles.push(file.filePath);
+                fileContentsMap[file.filePath] = file.content; // 存储文件内容
                 return `--- START OF FILE ${file.filePath} ---\n${file.content}`;
             }
             return null;
@@ -95,9 +98,9 @@ export async function createProjectSummary(projectDir: string): Promise<{ summar
             summary = `These are the existing files in the app:\n` + summary;
         }
 
-        return { summary, includedFiles };
+        return { summary, includedFiles, fileContentsMap };
     } catch (error) {
         console.error(`Error creating project summary for directory "${projectDir}":`, error);
-        return { summary: '', includedFiles: [] };
+        return { summary: '', includedFiles: [], fileContentsMap: {} };
     }
 }

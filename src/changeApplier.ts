@@ -1,23 +1,12 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as xmljs from 'xml-js';
+import { XMLParser } from 'fast-xml-parser';
+import { FileChange } from './aiService'; // Import FileChange interface
 
 export interface ChangeDetail {
     file: string;
     description: string;
     fullPath: string;
-}
-
-interface XmlElement {
-    type: 'element' | 'text';
-    name?: string;
-    attributes?: { [key: string]: string };
-    elements?: XmlElement[];
-    text?: string;
-}
-
-interface ChangesDocument {
-    elements: [XmlElement];
 }
 
 /**
@@ -29,38 +18,61 @@ interface ChangesDocument {
  */
 export async function applyChanges(xmlString: string, baseDirectory: string): Promise<ChangeDetail[]> {
     const appliedChanges: ChangeDetail[] = [];
-    try {
-        const parsedXml = xmljs.xml2js(xmlString, { compact: false, cdataKey: 'text' }) as ChangesDocument;
-        const rootElement = parsedXml.elements[0];
-        const changeElements = rootElement.elements || [];
+    const parser = new XMLParser({
+        ignoreAttributes: false,
+        attributeNamePrefix: "",
+        textNodeName: "content",
+        cdataPropName: "content",
+        allowBooleanAttributes: true
+    });
 
-        if (rootElement.name !== 'changes' || changeElements.length === 0) {
+    try {
+        const jsonObj = parser.parse(xmlString);
+        const changes = jsonObj.changes?.change;
+        if (!changes) {
             console.log('No valid changes found in XML.');
             return appliedChanges;
         }
 
-        for (const change of changeElements) {
-            const fileElement = change.elements?.find(e => e.name === 'file');
-            const descriptionElement = change.elements?.find(e => e.name === 'description');
-            const contentElement = change.elements?.find(e => e.name === 'content');
+        const changesArray: any[] = Array.isArray(changes) ? changes : [changes];
 
-            const filePath = fileElement?.elements?.[0]?.text;
-            const description = descriptionElement?.elements?.[0]?.text ?? 'No description provided.';
-            const content = contentElement?.elements?.[0]?.text;
+        for (const change of changesArray) {
+            const fileChange: FileChange = {
+                type: change.type || 'update',
+                file: change.file,
+                description: change.description,
+                content: change.content
+            };
 
-            if (change.type !== 'element' || change.name !== 'change' || !filePath || !content) {
-                console.warn('Skipping invalid change element:', change);
+            if (!fileChange.file) {
+                console.warn('Skipping invalid change element (missing file path):', change);
                 continue;
             }
-            const fullPath = path.join(baseDirectory, filePath);
+
+            const fullPath = path.join(baseDirectory, fileChange.file);
 
             try {
-                await fs.mkdir(path.dirname(fullPath), { recursive: true });
-                await fs.writeFile(fullPath, content, 'utf-8');
+                if (fileChange.type === 'delete') {
+                    // Check if file exists before attempting to delete
+                    try {
+                        await fs.access(fullPath);
+                        await fs.unlink(fullPath);
+                        console.log(`Deleted file: ${fullPath}`);
+                    } catch (accessError) {
+                        console.warn(`File not found for deletion, skipping: ${fullPath}`);
+                    }
+                } else { // 'update'
+                    if (fileChange.content === undefined) {
+                        console.warn(`Skipping change for ${fileChange.file} due to missing content for 'update' operation.`);
+                        continue;
+                    }
+                    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+                    await fs.writeFile(fullPath, fileChange.content, 'utf-8');
+                }
                 
                 appliedChanges.push({
-                    file: filePath,
-                    description: description,
+                    file: fileChange.file,
+                    description: fileChange.description,
                     fullPath: fullPath,
                 });
 
