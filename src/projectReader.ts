@@ -35,7 +35,7 @@ export async function createProjectSummary(projectDir: string): Promise<string> 
         const files = await readFilesRecursively(projectDir, projectDir);
         const summaryBlocks = files.map(file => {
             if (file) { // Check if file is not undefined
-                return `--- START OF FILE ${file.filePath} ---\n${file.content}`;
+                return `These are the existing files in the app:\n--- START OF FILE ${file.filePath} ---\n${file.content}`;
             }
             return '';
         }).filter(block => block !== ''); // Filter out empty blocks
