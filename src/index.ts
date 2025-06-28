@@ -2,7 +2,7 @@ import { createProjectSummary } from './projectReader';
 import { extractXml } from './aiService';
 import { applyChanges } from './changeApplier';
 import { Command } from 'commander';
-import inquirer from 'inquirer';
+import { getMultilineInput } from './customInput';
 import { GoogleGenAI } from '@google/genai';
 import { promises as fs } from 'fs';
 import * as path from 'path';
@@ -34,15 +34,7 @@ async function main() {
     });
 
     while (true) {
-        const answers = await inquirer.prompt([
-            {
-                type: 'input',
-                name: 'request',
-                message: '请输入您的需求：',
-            },
-        ]);
-
-        const userInstruction = answers.request;
+        const userInstruction = await getMultilineInput();
 
         try {
             const projectSummary = await createProjectSummary(projectPath);
