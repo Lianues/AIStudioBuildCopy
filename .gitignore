@@ -3,8 +3,6 @@
 
 # Build output
 /dist
-/project/**
-!/project/.gitkeep
 
 # Log files
 npm-debug.log*
