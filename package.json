@@ -1,0 +1,24 @@
+{
+  "name": "typescript-cli-starter",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "ts-node src/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/genai": "^0.12.0",
+    "commander": "^9.4.1",
+    "inquirer": "^8.2.4",
+    "xml-js": "^1.6.11"
+  },
+  "devDependencies": {
+    "typescript": "^4.8.4",
+    "ts-node": "^10.9.1",
+    "@types/node": "^18.11.9",
+    "@types/inquirer": "^8.2.1"
+  }
+}
