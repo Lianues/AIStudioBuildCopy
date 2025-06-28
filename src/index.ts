@@ -6,6 +6,7 @@ import { getMultilineInput } from './customInput';
 import { GoogleGenAI } from '@google/genai';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import chalk from 'chalk';
 
 async function main() {
     const program = new Command();
@@ -23,7 +24,7 @@ async function main() {
     }
     const ai = new GoogleGenAI({ apiKey });
 
-    const systemInstructionPath = path.join(process.cwd(), 'ai的python系统提示词.md');
+    const systemInstructionPath = path.join(process.cwd(), 'ai的TSCli系统提示词.md');
     const systemInstruction = await fs.readFile(systemInstructionPath, 'utf-8');
 
     const chat = ai.chats.create({
@@ -37,8 +38,15 @@ async function main() {
         const userInstruction = await getMultilineInput();
 
         try {
-            const projectSummary = await createProjectSummary(projectPath);
-            const fullPromptString = `${projectSummary}\n\n---User Instruction---\n${userInstruction}`;
+            const { summary, includedFiles } = await createProjectSummary(projectPath);
+
+            console.log(chalk.yellow('--- Included Files ---'));
+            includedFiles.forEach(file => {
+                console.log(chalk.green(file));
+            });
+            console.log(chalk.yellow('--------------------'));
+
+            const fullPromptString = `${summary}\n\n---User Instruction---\n${userInstruction}`;
 
             // NOTE: The following block is for debugging. Uncomment to see the full emulated request body sent to the AI, including history.
             /*
@@ -61,9 +69,9 @@ async function main() {
             const result = await chat.sendMessage({ message: fullPromptString });
 
             // Log the full response body for debugging
-            console.log("==================== Full AI Response Body =====================");
-            console.log(JSON.stringify(result, null, 2));
-            console.log("=============================================================");
+            // console.log("==================== Full AI Response Body =====================");
+            // console.log(JSON.stringify(result, null, 2));
+            // console.log("=============================================================");
 
             const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
             const xmlContent = extractXml(responseText);
