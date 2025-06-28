@@ -1,14 +1,15 @@
 import readline from 'readline';
 import stringWidth from 'string-width';
+import chalk from 'chalk';
 
-export function getMultilineInput(): Promise<string> {
+export function getMultilineInput(): Promise<{ text: string, lineCount: number }> {
   return new Promise((resolve) => {
     const lines: string[] = [''];
     let cursorLine = 0; // The line number within our `lines` array
     let cursorCol = 0;  // The column number within the current line string
     let lastEnterTime = 0;
 
-    const prompt = '请输入您的需求 (双击Enter或Ctrl+D提交):\n';
+    const prompt = chalk.cyan('请输入您的需求 (双击Enter或Ctrl+D提交):\n');
     process.stdout.write(prompt);
 
     const redraw = () => {
@@ -41,11 +42,9 @@ export function getMultilineInput(): Promise<string> {
       if (key.ctrl && key.name === 'd') {
         if (process.stdin.isTTY) process.stdin.setRawMode(false);
         process.stdin.removeListener('keypress', keypressHandler);
-        // Move cursor to the end of the input and add a newline
-        readline.moveCursor(process.stdout, 0, lines.length - 1 - cursorLine);
-        readline.cursorTo(process.stdout, stringWidth(lines[lines.length - 1]));
-        process.stdout.write('\n'); // Add newline for Ctrl+D submission
-        resolve(lines.join('\n'));
+        // The prompt takes 1 line, plus the number of lines of text.
+        const lineCount = 1 + lines.length;
+        resolve({ text: lines.join('\n'), lineCount });
         return;
       }
 
@@ -54,15 +53,14 @@ export function getMultilineInput(): Promise<string> {
         if (currentTime - lastEnterTime < 500) {
           if (process.stdin.isTTY) process.stdin.setRawMode(false);
           process.stdin.removeListener('keypress', keypressHandler);
-          // Move cursor to the end of the input
-          readline.moveCursor(process.stdout, 0, lines.length - 1 - cursorLine);
-          readline.cursorTo(process.stdout, stringWidth(lines[lines.length - 1]));
           // Remove the last empty line if it exists due to the final ENTER press
           let finalLines = lines;
           if (finalLines.length > 0 && finalLines[finalLines.length - 1] === '') {
               finalLines = finalLines.slice(0, finalLines.length - 1);
           }
-          resolve(finalLines.join('\n'));
+          // The prompt takes 1 line, plus the number of lines of text.
+          const lineCount = 1 + finalLines.length;
+          resolve({ text: finalLines.join('\n'), lineCount });
           return;
         }
         lastEnterTime = currentTime;

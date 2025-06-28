@@ -17,5 +17,7 @@
   "maxContextHistoryTurns": -1,
   // 是否启用代码上下文优化功能
   // 启用后，如果检测到用户提交的代码与历史记录中的代码一致，将精简历史记录以减少token消耗
-  "optimizeCodeContext": true
+  "optimizeCodeContext": true,
+  // 控制是否启用流式响应，以实时接收AI返回的内容
+  "enableStreaming": true
 }
