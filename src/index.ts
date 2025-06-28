@@ -76,6 +76,16 @@ async function main() {
             const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
             const xmlContent = extractXml(responseText);
 
+            const usageMetadata = result.usageMetadata;
+            if (usageMetadata) {
+                console.log(chalk.yellow('--- Token Usage ---'));
+                console.log(`promptTokenCount（提示token）: ${usageMetadata.promptTokenCount}`);
+                console.log(`thoughtsTokenCount（思考token）: ${usageMetadata.thoughtsTokenCount}`);
+                console.log(`candidatesTokenCount（补全token）: ${usageMetadata.candidatesTokenCount}`);
+                console.log(`totalTokenCount（总token）: ${usageMetadata.totalTokenCount}`);
+                console.log(chalk.yellow('-------------------'));
+            }
+
             console.log(chalk.blue('AI Response:')); // 始终打印 AI Response:
 
             if (xmlContent) {

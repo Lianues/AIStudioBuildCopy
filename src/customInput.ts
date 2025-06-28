@@ -44,7 +44,7 @@ export function getMultilineInput(): Promise<string> {
         // Move cursor to the end of the input and add a newline
         readline.moveCursor(process.stdout, 0, lines.length - 1 - cursorLine);
         readline.cursorTo(process.stdout, stringWidth(lines[lines.length - 1]));
-        process.stdout.write('\n');
+        process.stdout.write('\n'); // Add newline for Ctrl+D submission
         resolve(lines.join('\n'));
         return;
       }
@@ -54,11 +54,15 @@ export function getMultilineInput(): Promise<string> {
         if (currentTime - lastEnterTime < 500) {
           if (process.stdin.isTTY) process.stdin.setRawMode(false);
           process.stdin.removeListener('keypress', keypressHandler);
-          // Move cursor to the end of the input and add a newline
+          // Move cursor to the end of the input
           readline.moveCursor(process.stdout, 0, lines.length - 1 - cursorLine);
           readline.cursorTo(process.stdout, stringWidth(lines[lines.length - 1]));
-          process.stdout.write('\n');
-          resolve(lines.join('\n').replace(/\n\n$/, '\n'));
+          // Remove the last empty line if it exists due to the final ENTER press
+          let finalLines = lines;
+          if (finalLines.length > 0 && finalLines[finalLines.length - 1] === '') {
+              finalLines = finalLines.slice(0, finalLines.length - 1);
+          }
+          resolve(finalLines.join('\n'));
           return;
         }
         lastEnterTime = currentTime;
