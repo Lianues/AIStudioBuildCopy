@@ -21,8 +21,9 @@ export async function applyChanges(xmlString: string, baseDirectory: string): Pr
     const parser = new XMLParser({
         ignoreAttributes: false,
         attributeNamePrefix: "",
-        textNodeName: "content",
-        cdataPropName: "content",
+        // Stop parsing at the 'content' node to treat its value as a raw string.
+        // This robustly handles CDATA and mixed content, fixing the TypeError.
+        stopNodes: ["changes.change.content"],
         allowBooleanAttributes: true
     });
 
@@ -37,23 +38,21 @@ export async function applyChanges(xmlString: string, baseDirectory: string): Pr
         const changesArray: any[] = Array.isArray(changes) ? changes : [changes];
 
         for (const change of changesArray) {
-            const fileChange: FileChange = {
-                type: change.type || 'update',
-                file: change.file,
-                description: change.description,
-                content: change.content
-            };
+            const type = change.type || 'update';
+            const file = change.file;
+            const description = change.description;
+            // With stopNodes, change.content is guaranteed to be a string.
+            const content = change.content;
 
-            if (!fileChange.file) {
+            if (!file) {
                 console.warn('Skipping invalid change element (missing file path):', change);
                 continue;
             }
 
-            const fullPath = path.join(baseDirectory, fileChange.file);
+            const fullPath = path.join(baseDirectory, file);
 
             try {
-                if (fileChange.type === 'delete') {
-                    // Check if file exists before attempting to delete
+                if (type === 'delete') {
                     try {
                         await fs.access(fullPath);
                         await fs.unlink(fullPath);
@@ -62,17 +61,18 @@ export async function applyChanges(xmlString: string, baseDirectory: string): Pr
                         console.warn(`File not found for deletion, skipping: ${fullPath}`);
                     }
                 } else { // 'update'
-                    if (fileChange.content === undefined) {
-                        console.warn(`Skipping change for ${fileChange.file} due to missing content for 'update' operation.`);
+                    if (content === undefined) {
+                        console.warn(`Skipping change for ${file} due to missing content for 'update' operation.`);
                         continue;
                     }
                     await fs.mkdir(path.dirname(fullPath), { recursive: true });
-                    await fs.writeFile(fullPath, fileChange.content, 'utf-8');
+                    // The content is now guaranteed to be a string, resolving the TypeError.
+                    await fs.writeFile(fullPath, content, 'utf-8');
                 }
                 
                 appliedChanges.push({
-                    file: fileChange.file,
-                    description: fileChange.description,
+                    file: file,
+                    description: description,
                     fullPath: fullPath,
                 });
 
