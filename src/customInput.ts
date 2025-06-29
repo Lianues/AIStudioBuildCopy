@@ -28,7 +28,7 @@ export async function getMultilineInput(): Promise<{ text: string, lineCount: nu
       let cursorCol = 0;
       let lastEnterTime = 0;
 
-      const prompt = chalk.cyan('请输入您的需求 (双击 Enter 或 Ctrl+D 提交):\n');
+      const prompt = chalk.cyan('请输入您的需求 (Ctrl+D 提交):\n');
       process.stdout.write(prompt);
       // Save cursor position. This is our anchor.
       process.stdout.write('\x1B[s');
@@ -103,17 +103,6 @@ export async function getMultilineInput(): Promise<{ text: string, lineCount: nu
         }
 
         if (key.name === 'return') {
-          const currentTime = Date.now();
-          if (currentTime - lastEnterTime < 500) {
-            let finalLines = lines;
-            if (finalLines.length > 0 && finalLines[finalLines.length - 1] === '') {
-              finalLines = finalLines.slice(0, finalLines.length - 1);
-            }
-            const lineCount = 1 + finalLines.length;
-            cleanupAndResolve({ text: finalLines.join('\n'), lineCount });
-            return;
-          }
-          lastEnterTime = currentTime;
           const remaining = lines[cursorLine].slice(cursorCol);
           lines[cursorLine] = lines[cursorLine].slice(0, cursorCol);
           cursorLine++;
