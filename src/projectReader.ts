@@ -100,7 +100,7 @@ export async function createProjectSummary(projectDir: string): Promise<{ summar
 
         return { summary, includedFiles, fileContentsMap };
     } catch (error) {
-        console.error(`Error creating project summary for directory "${projectDir}":`, error);
+        console.error(`为目录 "${projectDir}" 创建项目摘要时出错:`, error);
         return { summary: '', includedFiles: [], fileContentsMap: {} };
     }
 }

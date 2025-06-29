@@ -23,3 +23,6 @@ yarn-error.log*
 # OS-generated files
 .DS_Store
 Thumbs.db
+
+启动.cmd
+project/11.txt

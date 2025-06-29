@@ -9,7 +9,7 @@ export function getMultilineInput(): Promise<{ text: string, lineCount: number }
     let cursorCol = 0;  // The column number within the current line string
     let lastEnterTime = 0;
 
-    const prompt = chalk.cyan('请输入您的需求 (双击Enter或Ctrl+D提交):\n');
+    const prompt = chalk.cyan('请输入您的需求 (双击 Enter 或 Ctrl+D 提交):\n');
     process.stdout.write(prompt);
 
     const redraw = () => {

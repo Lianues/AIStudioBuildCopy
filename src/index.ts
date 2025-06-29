@@ -61,9 +61,38 @@ function parseUserMessageForFiles(messageText: string): { [filePath: string]: st
      // 如果配置文件加载失败，使用默认值或空对象
      config = {};
    }
- }
-
-async function main() {
+  }
+  
+  async function askForRetry(errorLineCount: number): Promise<boolean> {
+      return new Promise(resolve => {
+          const promptMessage = '按 "r" 重试, 或按其他任意键跳过.';
+          console.log(chalk.yellow(`\n${promptMessage}`));
+  
+          const wasRaw = process.stdin.isRaw;
+          if (!wasRaw) {
+              process.stdin.setRawMode(true);
+          }
+          process.stdin.resume();
+          process.stdin.once('data', key => {
+              if (!wasRaw) {
+                  process.stdin.setRawMode(false);
+              }
+              // Don't pause stdin, as the main input loop needs it.
+  
+              // Clear the prompt and the error message
+              const linesToClear = errorLineCount + 2; // +2 for the prompt and the preceding newline
+              readline.moveCursor(process.stdout, 0, -linesToClear);
+              readline.clearScreenDown(process.stdout);
+  
+              if (key.toString() === '\u0003') { // ctrl+c
+                  process.exit();
+              }
+              resolve(key.toString().toLowerCase() === 'r');
+          });
+      });
+  }
+  
+  async function main() {
     await loadConfig(); // 在main函数开始时加载配置
 
     const program = new Command();
@@ -100,18 +129,20 @@ async function main() {
         readline.clearScreenDown(process.stdout);
 
         // Now, display the formatted user request
-        console.log(chalk.magenta('User Request:'));
+        console.log(chalk.magenta('用户请求:'));
         console.log(userInstruction); // Print the actual instruction text
 
-        try {
-            const { summary, includedFiles, fileContentsMap } = await createProjectSummary(projectPath);
+        const { summary, includedFiles, fileContentsMap } = await createProjectSummary(projectPath);
 
-            console.log(chalk.yellow('--- Included Files ---'));
-            includedFiles.forEach(file => {
-                console.log(chalk.green(file));
-            });
-            console.log(chalk.yellow('--------------------'));
+        console.log(chalk.yellow('--- 项目文件 ---'));
+        includedFiles.forEach(file => {
+            console.log(chalk.green(file));
+        });
+        console.log(chalk.yellow('--------------------'));
 
+        let attemptSuccess = false;
+        while (!attemptSuccess) {
+            try {
             // 根据 optimizeCodeContext 配置项精简历史对话
             const optimizeCodeContext = config.optimizeCodeContext ?? true; // 默认启用
 
@@ -239,151 +270,98 @@ async function main() {
                 }
             };
 
+            // console.log(chalk.gray('--- AI 请求体 ---'));
+            // console.log(chalk.gray(JSON.stringify(fullRequestForLogging, null, 2)));
+            // console.log(chalk.gray('--------------------'));
+
             let responseText = '';
             let usageMetadata: any = null;
             
             if (config.enableStreaming) {
                 const stream = await chat.sendMessageStream({ message: fullPromptString });
+                
+                let responseStarted = false;
                 let buffer = '';
-                type StreamingState = 'TEXT' | 'AWAITING_CHANGE_HEADER' | 'STREAMING_FILE';
-                let state: StreamingState = 'TEXT';
-                
-                let fileStreamInfo: { stream: any; } | null = null;
-                let pendingFileName: string | null = null;
-                let pendingDescription: string | null = null;
-
-                let spinner: NodeJS.Timeout | null = null;
-                const spinnerChars = ['|', '/', '-', '\\'];
-                
-                const startSpinner = (text: string) => {
-                    process.stdout.write(text + ' ');
-                    let i = 0;
-                    spinner = setInterval(() => {
-                        process.stdout.write(chalk.yellow(spinnerChars[i++ % spinnerChars.length]) + '\b');
-                    }, 100);
-                };
-
-                const stopSpinner = () => {
-                    if (spinner) {
-                        clearInterval(spinner);
-                        spinner = null;
-                        process.stdout.write(chalk.green('✓ Done\n'));
-                    }
-                };
-                
-                console.log(chalk.blue('AI Response:'));
+                let inChangesBlock = false;
+                let xmlContent = '';
 
                 for await (const chunk of stream) {
+                    if (!responseStarted) {
+                        console.log(chalk.blue('AI 回复:'));
+                        responseStarted = true;
+                    }
                     buffer += chunk.text ?? '';
                     if (chunk.usageMetadata) usageMetadata = chunk.usageMetadata;
 
-                    let processBuffer = true;
-                    while (processBuffer) {
-                        processBuffer = false;
-                        switch (state) {
-                            case 'TEXT':
-                                const changesIndex = buffer.indexOf('<changes>');
-                                if (changesIndex !== -1) {
-                                    process.stdout.write(buffer.substring(0, changesIndex));
-                                    buffer = buffer.substring(changesIndex + '<changes>'.length);
-                                    state = 'AWAITING_CHANGE_HEADER';
-                                    processBuffer = true;
-                                } else {
-                                    process.stdout.write(buffer);
-                                    buffer = '';
-                                }
-                                break;
+                    // Process the buffer to find and extract the full <changes> block
+                    while (true) {
+                        if (!inChangesBlock) {
+                            const changesIndex = buffer.indexOf('<changes>');
+                            if (changesIndex !== -1) {
+                                // Print text before the XML block
+                                process.stdout.write(buffer.substring(0, changesIndex));
+                                buffer = buffer.substring(changesIndex);
+                                inChangesBlock = true;
+                            } else {
+                                // No XML start tag yet, print the whole buffer
+                                process.stdout.write(buffer);
+                                buffer = '';
+                                break; // Nothing more to process in the buffer for now
+                            }
+                        }
 
-                            case 'AWAITING_CHANGE_HEADER':
-                                const endChangesIndex = buffer.indexOf('</changes>');
-                                if (endChangesIndex !== -1) {
-                                    const textBeforeEnd = buffer.substring(0, endChangesIndex);
-                                    process.stdout.write(textBeforeEnd);
-                                    buffer = buffer.substring(endChangesIndex + '</changes>'.length);
-                                    state = 'TEXT';
-                                    processBuffer = true;
-                                    break;
-                                }
-                                
-                                if (pendingFileName === null) {
-                                    const fileMatch = buffer.match(/<file>([\s\S]*?)<\/file>/);
-                                    if (fileMatch) {
-                                        pendingFileName = fileMatch[1];
-                                        buffer = buffer.substring(buffer.indexOf(fileMatch[0]) + fileMatch[0].length);
-                                    }
-                                }
-                                
-                                if (pendingDescription === null) {
-                                    const descMatch = buffer.match(/<description>([\s\S]*?)<\/description>/);
-                                    if (descMatch) {
-                                        pendingDescription = descMatch[1];
-                                        buffer = buffer.substring(buffer.indexOf(descMatch[0]) + descMatch[0].length);
-                                    }
-                                }
-
-                                const contentIndex = buffer.indexOf('<content>');
-                                if (pendingFileName !== null && pendingDescription !== null && contentIndex !== -1) {
-                                    const spinnerText = chalk.yellow(`Updating ${pendingFileName}: ${pendingDescription}`);
-                                    
-                                    const fullPath = path.join(projectPath, pendingFileName);
-                                    await fs.mkdir(path.dirname(fullPath), { recursive: true });
-                                    const fileHandle = await fs.open(fullPath, 'w');
-                                    fileStreamInfo = {
-                                        stream: fileHandle.createWriteStream(),
-                                    };
-                                    
-                                    buffer = buffer.substring(contentIndex + '<content>'.length);
-                                    state = 'STREAMING_FILE';
-                                    startSpinner(spinnerText);
-                                    
-                                    pendingFileName = null;
-                                    pendingDescription = null;
-                                    processBuffer = true;
-                                }
-                                break;
-
-                            case 'STREAMING_FILE':
-                                const endContentIndex = buffer.indexOf('</content>');
-                                if (endContentIndex !== -1) {
-                                    const endChangeIndex = buffer.indexOf('</change>', endContentIndex);
-                                    if (endChangeIndex !== -1) {
-                                        const fileContent = buffer.substring(0, endContentIndex);
-                                        if (fileContent) await fileStreamInfo!.stream.write(fileContent);
-                                        
-                                        await new Promise<void>(resolve => fileStreamInfo!.stream.end(resolve));
-                                        stopSpinner();
-                                        fileStreamInfo = null;
-                                        
-                                        buffer = buffer.substring(endChangeIndex + '</change>'.length);
-                                        state = 'AWAITING_CHANGE_HEADER';
-                                        processBuffer = true;
-                                    }
-                                } else {
-                                    await fileStreamInfo!.stream.write(buffer);
-                                    buffer = '';
-                                }
-                                break;
+                        if (inChangesBlock) {
+                            const endChangesIndex = buffer.indexOf('</changes>');
+                            if (endChangesIndex !== -1) {
+                                // Found the end of the block. Extract it, and process the rest of the buffer.
+                                const blockEnd = endChangesIndex + '</changes>'.length;
+                                xmlContent += buffer.substring(0, blockEnd);
+                                buffer = buffer.substring(blockEnd);
+                                inChangesBlock = false;
+                                // Continue the while loop to process the rest of the buffer
+                            } else {
+                                // End of block not found yet, so the whole buffer is part of the XML.
+                                xmlContent += buffer;
+                                buffer = '';
+                                break; // Nothing more to process in the buffer for now
+                            }
                         }
                     }
                 }
-                if (state === 'TEXT' && buffer.length > 0) {
+
+                // After the stream ends, print any remaining conversational text
+                if (buffer) {
                     process.stdout.write(buffer);
                 }
-                responseText = '';
+                
+                // Now, apply the changes from the fully collected XML content
+                if (xmlContent) {
+                    const changes = parseXmlChanges(xmlContent);
+                    const appliedChanges = await applyChanges(changes, projectPath);
+                    
+                    console.log(chalk.yellow('\n--- 应用的变更 ---'));
+                    for (const change of appliedChanges) {
+                        console.log(chalk.green(`${change.file}:`));
+                        console.log(chalk.cyan(`  ${change.description}`));
+                    }
+                    console.log(chalk.yellow('-----------------------'));
+                }
+                responseText = ''; // Reset for the next turn
             } else {
                 const result = await chat.sendMessage({ message: fullPromptString });
                 responseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
                 usageMetadata = result.usageMetadata;
                 
-                console.log(chalk.blue('AI Response:'));
+                console.log(chalk.blue('AI 回复:'));
                 const xmlContent = extractXml(responseText);
                 if (xmlContent) {
                     const beforeXml = responseText.split(xmlContent)[0].trim().replace(/```xml\s*$/, '').trim();
                     if (beforeXml) console.log(beforeXml);
 
-                    const appliedChanges = await applyChanges(xmlContent, projectPath);
+                    const changes = parseXmlChanges(xmlContent);
+                    const appliedChanges = await applyChanges(changes, projectPath);
 
-                    console.log(chalk.yellow('--- Applied Changes ---'));
+                    console.log(chalk.yellow('--- 应用的变更 ---'));
                     for (const change of appliedChanges) {
                         console.log(chalk.green(`${change.file}:`));
                         console.log(chalk.cyan(`  ${change.description}`));
@@ -414,10 +392,33 @@ async function main() {
                 }
                 console.log(chalk.dim('-------------------'));
             }
-        } catch (error) {
-            console.error("An error occurred:", error);
+                attemptSuccess = true;
+            } catch (error: any) {
+                const errorMessage = `发生错误: ${error.toString()}`;
+                const terminalWidth = process.stdout.columns || 80; // Default to 80 if not available
+
+                // Accurately calculate the number of visual lines the error message will occupy.
+                // This handles both explicit newlines (`\n`) and automatic wrapping.
+                const hardLines = errorMessage.split('\n');
+                let visualLineCount = 0;
+                for (const line of hardLines) {
+                    // An empty line still counts as 1 line. A long line wraps.
+                    visualLineCount += Math.max(1, Math.ceil(line.length / terminalWidth));
+                }
+
+                console.error(chalk.red(errorMessage));
+
+                const shouldRetry = await askForRetry(visualLineCount);
+                if (!shouldRetry) {
+                    console.log(chalk.gray('已跳过失败的请求...'));
+                    attemptSuccess = true; // Exit retry loop, continue to next user input
+                }
+                // If retrying, the loop will continue.
+              }
+            }
+            // Ensure there's a newline before the next prompt, regardless of the outcome.
+            console.log();
+          }
         }
-    }
-}
 
 main().catch(console.error);

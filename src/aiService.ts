@@ -46,9 +46,16 @@ export function parseXmlChanges(xmlString: string): FileChange[] {
         // Default type to 'update' if not specified
         const type = change.type || 'update';
         
-        // With the stopNodes option, change.content is now guaranteed to be a string,
-        // so the complex object check is no longer needed.
-        const contentValue = change.content;
+        // With the stopNodes option, change.content is now guaranteed to be a string.
+        let contentValue = change.content;
+
+        // Strip CDATA wrapper if it exists
+        if (typeof contentValue === 'string') {
+            const cdataMatch = contentValue.match(/^<!\[CDATA\[([\s\S]*)\]\]>$/);
+            if (cdataMatch) {
+                contentValue = cdataMatch[1];
+            }
+        }
 
         const fileChange: FileChange = {
             type: type,
@@ -57,7 +64,7 @@ export function parseXmlChanges(xmlString: string): FileChange[] {
         };
 
         if (contentValue !== undefined) {
-            fileChange.content = String(contentValue);
+            fileChange.content = contentValue;
         }
 
         return fileChange;
