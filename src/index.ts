@@ -23,7 +23,7 @@ interface Config {
 
 let config: Config = {}; // 全局配置变量
 // 用于存储上次 AI 返回的文件内容，键为文件路径，值为文件内容
-let lastFileContents: { [key:string]: string } = {};
+let lastFileContents: { [key: string]: string } = {};
 
 /**
 * 从用户消息文本中解析文件快照。
@@ -238,165 +238,132 @@ async function main() {
                     systemInstruction: systemInstruction,
                 }
             };
+            // console.log("==================== Full Request to AI (Emulated) ====================");
+            // console.log(JSON.stringify(fullRequestForLogging, null, 2));
+            // console.log("=====================================================================");
 
             let responseText = '';
             let usageMetadata: any = null;
             
             if (config.enableStreaming) {
-                const stream = await chat.sendMessageStream({ message: fullPromptString });
-                let buffer = '';
-                type StreamingState = 'TEXT' | 'AWAITING_CHANGE_HEADER' | 'STREAMING_FILE';
-                let state: StreamingState = 'TEXT';
-                
-                let fileStreamInfo: { stream: any; } | null = null;
-                let pendingFileName: string | null = null;
-                let pendingDescription: string | null = null;
-
-                let spinner: NodeJS.Timeout | null = null;
-                const spinnerChars = ['|', '/', '-', '\\'];
-                
-                const startSpinner = (text: string) => {
-                    process.stdout.write(text + ' ');
-                    let i = 0;
-                    spinner = setInterval(() => {
-                        process.stdout.write(chalk.yellow(spinnerChars[i++ % spinnerChars.length]) + '\b');
-                    }, 100);
-                };
-
-                const stopSpinner = () => {
-                    if (spinner) {
-                        clearInterval(spinner);
-                        spinner = null;
-                        process.stdout.write(chalk.green('✓ Done\n'));
-                    }
-                };
-                
                 console.log(chalk.blue('AI Response:'));
+                const stream = await chat.sendMessageStream({ message: fullPromptString });
+                let fullResponseText = '';
+                let usageBlockLineCount = 0;
+                
+                const redrawUsageBlock = (metadata: any) => {
+                    if (usageBlockLineCount > 0) {
+                        readline.moveCursor(process.stdout, 0, -usageBlockLineCount);
+                        readline.cursorTo(process.stdout, 0);
+                        for (let i = 0; i < usageBlockLineCount; i++) {
+                            readline.clearLine(process.stdout, 0);
+                            if (i < usageBlockLineCount - 1) process.stdout.write('\n');
+                        }
+                        readline.moveCursor(process.stdout, 0, -usageBlockLineCount + 1);
+                    }
+
+                    const displayTypes = config.displayTokenConsumption!.displayTypes;
+                    const lines: string[] = [];
+                    lines.push(chalk.dim('--- Token Usage (Streaming) ---'));
+                    if (displayTypes.includes('input')) lines.push(chalk.dim(`promptTokenCount（提示token）: ${metadata.promptTokenCount}`));
+                    if (displayTypes.includes('output')) lines.push(chalk.dim(`candidatesTokenCount（补全token）: ${metadata.candidatesTokenCount}`));
+                    if (displayTypes.includes('total')) lines.push(chalk.dim(`totalTokenCount（总token）: ${metadata.totalTokenCount}`));
+                    if (displayTypes.includes('thoughts')) lines.push(chalk.dim(`thoughtsTokenCount（思考token）: ${metadata.thoughtsTokenCount}`));
+                    lines.push(chalk.dim('-----------------------------'));
+                    
+                    const output = '\n' + lines.join('\n');
+                    process.stdout.write(output);
+                    usageBlockLineCount = lines.length + 1;
+                };
 
                 for await (const chunk of stream) {
-                    buffer += chunk.text ?? '';
-                    if (chunk.usageMetadata) usageMetadata = chunk.usageMetadata;
+                    // console.log(chalk.gray(`\n--- Stream Chunk ---\n${JSON.stringify(chunk, null, 2)}\n--- End Chunk ---`));
 
-                    let processBuffer = true;
-                    while (processBuffer) {
-                        processBuffer = false;
-                        switch (state) {
-                            case 'TEXT':
-                                const changesIndex = buffer.indexOf('<changes>');
-                                if (changesIndex !== -1) {
-                                    process.stdout.write(buffer.substring(0, changesIndex));
-                                    buffer = buffer.substring(changesIndex + '<changes>'.length);
-                                    state = 'AWAITING_CHANGE_HEADER';
-                                    processBuffer = true;
-                                } else {
-                                    process.stdout.write(buffer);
-                                    buffer = '';
-                                }
-                                break;
+                    const chunkText = chunk.text;
+                    if (chunk.usageMetadata) {
+                        usageMetadata = chunk.usageMetadata;
+                    }
 
-                            case 'AWAITING_CHANGE_HEADER':
-                                const endChangesIndex = buffer.indexOf('</changes>');
-                                if (endChangesIndex !== -1) {
-                                    const textBeforeEnd = buffer.substring(0, endChangesIndex);
-                                    process.stdout.write(textBeforeEnd);
-                                    buffer = buffer.substring(endChangesIndex + '</changes>'.length);
-                                    state = 'TEXT';
-                                    processBuffer = true;
-                                    break;
-                                }
-                                
-                                if (pendingFileName === null) {
-                                    const fileMatch = buffer.match(/<file>([\s\S]*?)<\/file>/);
-                                    if (fileMatch) {
-                                        pendingFileName = fileMatch[1];
-                                        buffer = buffer.substring(buffer.indexOf(fileMatch[0]) + fileMatch[0].length);
-                                    }
-                                }
-                                
-                                if (pendingDescription === null) {
-                                    const descMatch = buffer.match(/<description>([\s\S]*?)<\/description>/);
-                                    if (descMatch) {
-                                        pendingDescription = descMatch[1];
-                                        buffer = buffer.substring(buffer.indexOf(descMatch[0]) + descMatch[0].length);
-                                    }
-                                }
-
-                                const contentIndex = buffer.indexOf('<content>');
-                                if (pendingFileName !== null && pendingDescription !== null && contentIndex !== -1) {
-                                    const spinnerText = chalk.yellow(`Updating ${pendingFileName}: ${pendingDescription}`);
-                                    
-                                    const fullPath = path.join(projectPath, pendingFileName);
-                                    await fs.mkdir(path.dirname(fullPath), { recursive: true });
-                                    const fileHandle = await fs.open(fullPath, 'w');
-                                    fileStreamInfo = {
-                                        stream: fileHandle.createWriteStream(),
-                                    };
-                                    
-                                    buffer = buffer.substring(contentIndex + '<content>'.length);
-                                    state = 'STREAMING_FILE';
-                                    startSpinner(spinnerText);
-                                    
-                                    pendingFileName = null;
-                                    pendingDescription = null;
-                                    processBuffer = true;
-                                }
-                                break;
-
-                            case 'STREAMING_FILE':
-                                const endContentIndex = buffer.indexOf('</content>');
-                                if (endContentIndex !== -1) {
-                                    const endChangeIndex = buffer.indexOf('</change>', endContentIndex);
-                                    if (endChangeIndex !== -1) {
-                                        const fileContent = buffer.substring(0, endContentIndex);
-                                        if (fileContent) await fileStreamInfo!.stream.write(fileContent);
-                                        
-                                        await new Promise<void>(resolve => fileStreamInfo!.stream.end(resolve));
-                                        stopSpinner();
-                                        fileStreamInfo = null;
-                                        
-                                        buffer = buffer.substring(endChangeIndex + '</change>'.length);
-                                        state = 'AWAITING_CHANGE_HEADER';
-                                        processBuffer = true;
-                                    }
-                                } else {
-                                    await fileStreamInfo!.stream.write(buffer);
-                                    buffer = '';
-                                }
-                                break;
+                    if (chunkText) {
+                        if (usageBlockLineCount > 0) {
+                            readline.moveCursor(process.stdout, 0, -usageBlockLineCount);
+                            readline.cursorTo(process.stdout, 0);
+                            for (let i = 0; i < usageBlockLineCount; i++) {
+                                readline.clearLine(process.stdout, 0);
+                                if (i < usageBlockLineCount - 1) process.stdout.write('\n');
+                            }
+                            readline.moveCursor(process.stdout, 0, -usageBlockLineCount + 1);
+                            usageBlockLineCount = 0;
                         }
+                        process.stdout.write(chunkText);
+                        fullResponseText += chunkText;
+                    }
+
+                    if (config.displayTokenConsumption?.enabled && usageMetadata) {
+                        redrawUsageBlock(usageMetadata);
                     }
                 }
-                if (state === 'TEXT' && buffer.length > 0) {
-                    process.stdout.write(buffer);
-                }
-                responseText = '';
+                responseText = fullResponseText;
+                console.log();
             } else {
                 const result = await chat.sendMessage({ message: fullPromptString });
+                // console.log(chalk.gray(`\n--- API Response ---\n${JSON.stringify(result, null, 2)}\n--- End Response ---`));
                 responseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
                 usageMetadata = result.usageMetadata;
-                
-                console.log(chalk.blue('AI Response:'));
-                const xmlContent = extractXml(responseText);
-                if (xmlContent) {
-                    const beforeXml = responseText.split(xmlContent)[0].trim().replace(/```xml\s*$/, '').trim();
-                    if (beforeXml) console.log(beforeXml);
+            }
 
-                    const appliedChanges = await applyChanges(xmlContent, projectPath);
+            const xmlContent = extractXml(responseText);
 
-                    console.log(chalk.yellow('--- Applied Changes ---'));
-                    for (const change of appliedChanges) {
-                        console.log(chalk.green(`${change.file}:`));
-                        console.log(chalk.cyan(`  ${change.description}`));
+            // Update lastFileContents regardless of the mode
+            if (xmlContent) {
+                const changesInResponse = parseXmlChanges(xmlContent);
+                for (const change of changesInResponse) {
+                    if (typeof change.content === 'string') {
+                        lastFileContents[change.file] = change.content;
                     }
-                    console.log(chalk.yellow('-----------------------'));
+                }
+            }
 
-                    const afterXml = responseText.split(xmlContent)[1]?.trim().replace(/^\s*```/, '').trim();
-                    if (afterXml) console.log(afterXml);
-                } else {
+            // Handle output based on whether XML content was found
+            if (xmlContent) {
+                const chalk = (await import('chalk')).default;
+                // In non-streaming mode, print the text parts before and after the XML.
+                if (!config.enableStreaming) {
+                    console.log(chalk.blue('AI Response:'));
+                    const parts = responseText.split(xmlContent);
+                    const beforeXml = parts[0].trim();
+                    if (beforeXml) {
+                        console.log(beforeXml.replace(/```xml\s*$/, '').trim());
+                    }
+                }
+
+                const appliedChanges = await applyChanges(xmlContent, projectPath);
+                
+                console.log(chalk.yellow('--- Applied Changes ---'));
+                for (const change of appliedChanges) {
+                    console.log(chalk.green(`${change.file}:`));
+                    console.log(chalk.cyan(`  ${change.description}`));
+                    console.log(chalk.dim(`  Successfully applied change to: ${change.fullPath}`));
+                }
+                console.log(chalk.yellow('-----------------------'));
+                
+                if (!config.enableStreaming) {
+                    const parts = responseText.split(xmlContent);
+                    const afterXml = parts.length > 1 ? parts[1].trim() : '';
+                    if (afterXml) {
+                        console.log(afterXml.replace(/^\s*```/, '').trim());
+                    }
+                }
+            } else {
+                // If no XML, and not in streaming mode, print the full response.
+                // In streaming mode, the response is already printed chunk by chunk.
+                if (!config.enableStreaming) {
+                    console.log(chalk.blue('AI Response:'));
                     console.log(responseText);
                 }
             }
             
+            // Display token usage at the end for non-streaming mode
             if (!config.enableStreaming && config.displayTokenConsumption?.enabled && usageMetadata) {
                 const displayTypes = config.displayTokenConsumption.displayTypes;
                 console.log(chalk.dim('--- Token Usage ---'));

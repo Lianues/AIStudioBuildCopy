@@ -1,4 +1,4 @@
-<![CDATA[# Dependencies
+# Dependencies
 /node_modules
 
 # Build output
@@ -13,7 +13,6 @@ __pycache__/
 
 # Env files
 .env
-.env.example # Often useful to share as an example, but sometimes ignored in actual AI training contexts. Keeping it for general practice.
 
 # Dependency lock file
 /package-lock.json
@@ -22,4 +21,3 @@ __pycache__/
 /README.md
 /gemini格式api调用.md
 /ai的TSCli系统提示词.md
-]]>
