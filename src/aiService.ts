@@ -31,8 +31,9 @@ export function parseXmlChanges(xmlString: string): FileChange[] {
     const parser = new XMLParser({
         ignoreAttributes: false,
         attributeNamePrefix: "", // No prefix for attributes
-        textNodeName: "content", // Use 'content' for the text value of elements
-        cdataPropName: "content" // Treat CDATA as a property named 'content'
+        // Stop parsing at the 'content' node to treat its value as a raw string.
+        // This robustly handles CDATA and mixed content.
+        stopNodes: ["changes.change.content"],
     });
 
     const jsonObj = parser.parse(xmlString);
@@ -45,11 +46,9 @@ export function parseXmlChanges(xmlString: string): FileChange[] {
         // Default type to 'update' if not specified
         const type = change.type || 'update';
         
-        let contentValue = change.content;
-        // Handle cases where content might be nested or an object
-        if (typeof contentValue === 'object' && contentValue !== null) {
-            contentValue = contentValue.content || '';
-        }
+        // With the stopNodes option, change.content is now guaranteed to be a string,
+        // so the complex object check is no longer needed.
+        const contentValue = change.content;
 
         const fileChange: FileChange = {
             type: type,
