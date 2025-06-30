@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { XMLParser } from 'fast-xml-parser';
 import { FileChange } from './aiService'; // Import FileChange interface
+import { createBackup } from './archiver';
 
 export interface ChangeDetail {
     file: string;
@@ -16,8 +17,13 @@ export interface ChangeDetail {
  * @param baseDirectory The base directory where changes will be applied.
  * @returns A promise that resolves to an array of change details.
  */
-export async function applyChanges(changes: FileChange[], baseDirectory: string): Promise<ChangeDetail[]> {
+export async function applyChanges(
+    changes: FileChange[],
+    baseDirectory: string
+): Promise<{ appliedChanges: ChangeDetail[]; backupCreated: boolean; backupFolderName: string | null }> {
     const appliedChanges: ChangeDetail[] = [];
+    let backupCreated = false;
+    let backupFolderName: string | null = null;
 
     for (const change of changes) {
         const { type, file, description, content } = change;
@@ -57,5 +63,13 @@ export async function applyChanges(changes: FileChange[], baseDirectory: string)
             console.error(`未能将变更应用到文件: ${fullPath}`, fileError);
         }
     }
-    return appliedChanges;
+
+    if (appliedChanges.length > 0) {
+        const backupName = `${new Date().toISOString().replace(/[:.]/g, '-')}_ai_change`;
+        const backupResult = await createBackup(baseDirectory, backupName);
+        backupCreated = backupResult.created;
+        backupFolderName = backupResult.folderName;
+    }
+
+    return { appliedChanges, backupCreated, backupFolderName };
 }

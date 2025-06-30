@@ -9,6 +9,7 @@ import 'dotenv/config';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { createProjectSummary } from './projectReader';
+import { createBackup } from './archiver';
 
 //<--- 新增配置接口和加载函数 --->
 interface Config {
@@ -195,9 +196,17 @@ export type StreamEvent =
   | { type: 'chunk'; content: string }
   | { type: 'token'; usage: any; displayTypes: string[] }
   | { type: 'files'; files: string[] }
+  | { type: 'backup'; message: string; backupFolderName: string; userMessageId: number }
   | { type: 'error'; message: string };
 
-export async function* generateChatResponseStream(message: string, projectPath: string): AsyncGenerator<StreamEvent> {
+export async function* generateChatResponseStream(message: string, projectPath: string, userMessageId: number): AsyncGenerator<StreamEvent> {
+    const backupName = `${new Date().toISOString().replace(/[:.]/g, '-')}_initial`;
+    const { created, folderName } = await createBackup(projectPath, backupName);
+
+    if (created && folderName) {
+        yield { type: 'backup', message: `初始项目状态已存档于 ${folderName}`, backupFolderName: folderName, userMessageId };
+    }
+
     if (!genAI) {
         await initializeChat();
     }

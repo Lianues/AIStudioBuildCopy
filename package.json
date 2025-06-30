@@ -22,6 +22,7 @@
     "express": "^5.1.0",
     "express-sse": "^1.0.0",
     "fast-xml-parser": "^5.2.5",
+    "ignore": "^7.0.5",
     "minimatch": "^9.0.5",
     "string-width": "^7.2.0"
   },

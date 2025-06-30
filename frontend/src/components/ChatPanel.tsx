@@ -5,9 +5,12 @@ interface Message {
   sender: 'user' | 'ai';
   text: string;
   id: number; // ID is now mandatory
+  type: 'text' | 'backup' | 'info' | 'error';
   changes?: FileChange[];
   files?: string[]; // For user messages
   tokenUsage?: any; // For AI messages
+  backupFolderName?: string; // For backup messages
+  userMessageId?: number; // To associate backups with user messages
 }
 
 interface ChatPanelProps {
@@ -159,10 +162,73 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
   const chatHistoryRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // Persistent event source for global notifications like AI changes backups
+    const globalEventSource = new EventSource('http://localhost:3001/api/events');
+
+    globalEventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      // This handles backup messages from AI changes, which are global
+      if (data.type === 'backup' && !data.userMessageId) {
+         const backupMessage: Message = {
+            id: Date.now(),
+            sender: 'ai',
+            type: 'backup',
+            text: data.message,
+            backupFolderName: data.backupFolderName
+         };
+         setMessages(prev => [...prev, backupMessage]);
+      }
+      // This handles successful restore messages
+      if (data.type === 'info') {
+        const infoMessage: Message = {
+            id: Date.now(),
+            sender: 'ai',
+            type: 'info',
+            text: data.message,
+        };
+        setMessages(prev => [...prev, infoMessage]);
+      }
+    };
+
+    globalEventSource.onerror = (err) => {
+      console.error('Global EventSource failed:', err);
+    };
+
+    return () => {
+      globalEventSource.close();
+    };
+  }, []); // Empty dependency array means this runs once on mount
+
+  useEffect(() => {
     if (chatHistoryRef.current) {
       chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const handleRestore = async (backupFolderName: string) => {
+    if (!confirm(`您确定要将项目恢复到备份 "${backupFolderName}" 吗？当前的所有未保存更改都将丢失。`)) {
+      return;
+    }
+    try {
+      const response = await fetch('http://localhost:3001/api/project/restore', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ backupFolderName }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        // Instead of reloading, dispatch a custom event that other components can listen to.
+        window.dispatchEvent(new CustomEvent('project-restored'));
+      } else {
+        // You might want to show a more subtle notification here instead of an alert
+        console.error('Restore failed:', data.error);
+      }
+    } catch (error) {
+      console.error('Error during restore:', error);
+    }
+  };
 
   const handleApplyChanges = async () => {
     if (cachedChanges.length === 0) return;
@@ -186,21 +252,48 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
     const userMessageId = Date.now();
     const aiMessageId = userMessageId + 1;
 
-    const userMessage: Message = { id: userMessageId, sender: 'user', text: inputValue };
-    const aiMessage: Message = { id: aiMessageId, sender: 'ai', text: '' };
+    const userMessage: Message = { id: userMessageId, sender: 'user', text: inputValue, type: 'text' };
+    const aiMessage: Message = { id: aiMessageId, sender: 'ai', text: '', type: 'text' };
 
     setCachedChanges([]);
     setMessages((prevMessages) => [...prevMessages, userMessage, aiMessage]);
     setInputValue('');
     setIsLoading(true);
 
-    const eventSource = new EventSource(`/api/ai/chat?message=${encodeURIComponent(inputValue)}`);
+    const eventSource = new EventSource(`/api/ai/chat?message=${encodeURIComponent(inputValue)}&userMessageId=${userMessageId}`);
 
     eventSource.addEventListener('files', (event) => {
         const data = JSON.parse(event.data);
         setMessages((prevMessages) => prevMessages.map(msg =>
             msg.id === userMessageId ? { ...msg, files: data.files } : msg
         ));
+    });
+
+    // This listener now ONLY handles backups tied to a user request
+    eventSource.addEventListener('backup', (event) => {
+      const data = JSON.parse(event.data);
+      if (data.userMessageId) {
+        const backupMessage: Message = {
+          id: Date.now(),
+          sender: 'ai',
+          type: 'backup',
+          text: data.message,
+          backupFolderName: data.backupFolderName,
+          userMessageId: data.userMessageId,
+        };
+
+        setMessages(prev => {
+          const userMsgIndex = prev.findIndex(msg => msg.id === backupMessage.userMessageId);
+          if (userMsgIndex !== -1) {
+            return [
+              ...prev.slice(0, userMsgIndex),
+              backupMessage,
+              ...prev.slice(userMsgIndex)
+            ];
+          }
+          return [...prev, backupMessage]; // Fallback
+        });
+      }
     });
 
     eventSource.addEventListener('chunk', (event) => {
@@ -228,6 +321,7 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
         id: aiMessageId,
         sender: 'ai',
         text: 'Sorry, something went wrong. Please try again.',
+        type: 'error',
       };
       setMessages((prevMessages) => prevMessages.map(msg => msg.id === aiMessageId ? errorMessage : msg));
       eventSource.close();
@@ -248,13 +342,26 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
         {messages.map((msg) => (
           <div key={msg.id} className={`message ${msg.sender}-message`}>
             <div className="message-bubble">
-              {msg.sender === 'ai' ? (
-                <AIMessageRenderer msg={msg} onChangesParsed={setCachedChanges} />
-              ) : (
-                <div style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</div>
-              )}
+              {(() => {
+                if (msg.type === 'backup') {
+                  return (
+                    <div>
+                      <p>{msg.text}</p>
+                      {msg.backupFolderName && (
+                        <button onClick={() => handleRestore(msg.backupFolderName!)} style={{ marginLeft: '10px', cursor: 'pointer' }}>
+                          恢复到此版本
+                        </button>
+                      )}
+                    </div>
+                  );
+                }
+                if (msg.sender === 'ai') {
+                  return <AIMessageRenderer msg={msg} onChangesParsed={setCachedChanges} />;
+                }
+                return <div style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</div>;
+              })()}
               {msg.sender === 'user' && <FilesCard files={msg.files} />}
-              {msg.sender === 'ai' && <TokenUsageCard tokenUsage={msg.tokenUsage} />}
+              {msg.sender === 'ai' && msg.type !== 'backup' && <TokenUsageCard tokenUsage={msg.tokenUsage} />}
             </div>
           </div>
         ))}

@@ -4,6 +4,7 @@ import { getProjectStructure, getFileContent } from './projectReader';
 import * as path from 'path';
 import * as aiService from './aiService';
 import { applyChanges } from './changeApplier';
+import { restoreBackup } from './archiver';
 import { watch } from 'chokidar';
 import SSE from 'express-sse';
 import killPort from 'kill-port';
@@ -54,8 +55,9 @@ app.get('/api/files/content', async (req, res) => {
 
 const aiChatHandler: RequestHandler = async (req, res) => {
   const message = req.query.message as string;
+  const userMessageId = Number(req.query.userMessageId);
 
-  if (!message) {
+  if (!message || !userMessageId) {
     res.status(400).json({ error: 'Message is required' });
     return;
   }
@@ -71,7 +73,7 @@ const aiChatHandler: RequestHandler = async (req, res) => {
   };
 
   try {
-    const stream = aiService.generateChatResponseStream(message, projectDir);
+    const stream = aiService.generateChatResponseStream(message, projectDir, userMessageId);
     for await (const event of stream) {
       // Act as a simple proxy, forwarding events to the client.
       sendEvent(event.type, event);
@@ -96,7 +98,10 @@ const applyChangesHandler: RequestHandler = async (req, res) => {
   }
 
   try {
-    const appliedChanges = await applyChanges(changes, projectDir);
+    const { appliedChanges, backupCreated, backupFolderName } = await applyChanges(changes, projectDir);
+    if (backupCreated && backupFolderName) {
+      sse.send({ type: 'backup', message: `AI 修改已应用并存档于 ${backupFolderName}`, backupFolderName: backupFolderName });
+    }
     res.json({ success: true, message: 'Changes applied successfully.', appliedChanges });
   } catch (error) {
     console.error('Failed to apply changes:', error);
@@ -105,6 +110,25 @@ const applyChangesHandler: RequestHandler = async (req, res) => {
 };
 
 app.post('/api/files/apply-changes', applyChangesHandler);
+
+const restoreBackupHandler: RequestHandler = async (req, res) => {
+  const { backupFolderName } = req.body;
+
+  if (!backupFolderName) {
+    res.status(400).json({ error: 'backupFolderName is required' });
+    return;
+  }
+
+  try {
+    await restoreBackup(projectDir, backupFolderName);
+    res.json({ success: true, message: `Project restored from ${backupFolderName}` });
+  } catch (error) {
+    console.error(`Failed to restore backup ${backupFolderName}:`, error);
+    res.status(500).json({ error: 'Failed to restore backup' });
+  }
+};
+
+app.post('/api/project/restore', restoreBackupHandler);
 
 app.get('/', (req, res) => {
   res.json({ message: 'API server is running' });

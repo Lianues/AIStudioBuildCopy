@@ -64,8 +64,18 @@ function App() {
       }
     };
 
+    const handleProjectRestored = () => {
+      fetchFiles();
+      if (selectedFileRef.current) {
+        handleFileSelect(selectedFileRef.current);
+      }
+    };
+
+    window.addEventListener('project-restored', handleProjectRestored);
+
     return () => {
       eventSource.close();
+      window.removeEventListener('project-restored', handleProjectRestored);
     };
   }, [fetchFiles, handleFileSelect]);
 
