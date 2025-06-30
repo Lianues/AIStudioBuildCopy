@@ -84,7 +84,7 @@ async function areDirectoriesEqual(projectPath: string, backupPath: string, proj
 }
 
 export async function createBackup(projectPath: string, backupFolderName: string): Promise<{created: boolean, folderName: string | null}> {
-    const backupRoot = path.join(path.dirname(projectPath), '.backups');
+    const backupRoot = path.join(path.dirname(projectPath), 'backups');
     const ig = await getIgnoreInstance(projectPath);
     const filesToBackup = await listFiles(projectPath, projectPath, ig);
     
@@ -117,7 +117,7 @@ export async function createBackup(projectPath: string, backupFolderName: string
 }
 
 export async function restoreBackup(projectPath: string, backupFolderName: string): Promise<void> {
-    const backupRoot = path.join(path.dirname(projectPath), '.backups');
+    const backupRoot = path.join(path.dirname(projectPath), 'backups');
     const backupDir = path.join(backupRoot, backupFolderName);
     const ig = await getIgnoreInstance(projectPath);
 
