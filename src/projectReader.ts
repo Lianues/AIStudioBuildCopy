@@ -147,11 +147,11 @@ export async function createProjectSummary(projectDir: string, log: boolean = tr
         if (summary) {
             summary = `These are the existing files in the app:\n` + summary;
         }
-        if (log) {
-            console.log('--- Project Files ---');
-            includedFiles.forEach(file => console.log(file));
-            console.log('--------------------');
-        }
+        // if (log) {
+        //     console.log('--- Project Files ---');
+        //     includedFiles.forEach(file => console.log(file));
+        //     console.log('--------------------');
+        // }
         return { summary, includedFiles, fileContentsMap };
     } catch (error) {
         console.error(`为目录 "${projectDir}" 创建项目摘要时出错:`, error);

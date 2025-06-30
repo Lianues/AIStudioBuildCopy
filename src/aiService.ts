@@ -70,7 +70,7 @@ async function initializeChat(): Promise<void> {
     }
     genAI = new GoogleGenAI({ apiKey });
 
-    const systemInstructionPath = path.join(process.cwd(), 'ai的TSCli系统提示词.md');
+    const systemInstructionPath = path.join(process.cwd(), 'SystemPrompt', 'ai的TSCli系统提示词.md');
     systemInstruction = await fs.readFile(systemInstructionPath, 'utf-8');
 }
 
@@ -220,9 +220,9 @@ export async function* generateChatResponseStream(message: string, projectPath: 
             systemInstruction: systemInstruction,
         };
 
-        console.log('--- AI Request Body ---');
-        console.log(JSON.stringify(fullRequestForLogging, null, 2));
-        console.log('--------------------');
+        // console.log('--- AI Request Body ---');
+        // console.log(JSON.stringify(fullRequestForLogging, null, 2));
+        // console.log('--------------------');
 
         const chat = genAI.chats.create({
             model: "gemini-2.5-flash",
