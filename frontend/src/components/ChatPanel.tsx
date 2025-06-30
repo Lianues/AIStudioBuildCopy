@@ -150,6 +150,7 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
   const [editingText, setEditingText] = useState('');
   const chatHistoryRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const fetchHistory = useCallback(async () => {
@@ -206,6 +207,15 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
       chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight;
     }
   }, [messages]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      const scrollHeight = textarea.scrollHeight;
+      textarea.style.height = `${scrollHeight}px`;
+    }
+  }, [inputValue]);
 
   const handleRestore = async (backupFolderName: string) => {
     if (!confirm(`您确定要将项目恢复到备份 "${backupFolderName}" 吗？当前的所有未保存更改都将丢失。`)) {
@@ -395,7 +405,7 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -597,14 +607,20 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
           )}
         </div>
         <div className="chat-input-form">
-          <input
-            type="text"
+          <textarea
+            ref={textareaRef}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyPress={handleKeyPress}
             className="chat-input"
             placeholder="Type your message..."
             disabled={isLoading}
+            rows={1}
+            style={{
+              resize: 'none',
+              overflowY: 'auto',
+              maxHeight: '150px',
+            }}
           />
           {isLoading ? (
             <button

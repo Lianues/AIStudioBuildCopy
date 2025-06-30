@@ -31,6 +31,6 @@
     // Top-k sampling 的参数
     "topK": 40,
     // 系统提示词文件的路径，用于指导AI的行为。留空则不使用系统提示词
-    "systemPromptPath": "SystemPrompt/ai的TSCli系统提示词.md"
+    "systemPromptPath": "SystemPrompt/ai的python系统提示词.md"
   }
 }

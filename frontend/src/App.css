@@ -273,17 +273,19 @@
 
 .chat-input {
   flex-grow: 1;
-  padding: 0.75rem;
+  padding: 0.75rem 1rem;
   border: 1px solid var(--input-border-color);
-  border-radius: 2rem;
+  border-radius: 4px;
   margin-right: 0.5rem;
   background-color: var(--background-color);
   color: var(--text-color);
+  line-height: 1.5;
+  box-sizing: border-box;
 }
 
 .send-button {
   padding: 0.75rem 1.5rem;
-  border-radius: 2rem;
+  border-radius: 4px;
   border: none;
   background-color: var(--button-primary-bg-color);
   color: var(--button-primary-text-color);
@@ -389,21 +391,24 @@
 .chat-history::-webkit-scrollbar,
 .file-tree-container::-webkit-scrollbar,
 .editor-content::-webkit-scrollbar,
-.history-panel ul::-webkit-scrollbar {
+.history-panel ul::-webkit-scrollbar,
+.chat-input::-webkit-scrollbar {
   width: 8px;
 }
 
 .chat-history::-webkit-scrollbar-track,
 .file-tree-container::-webkit-scrollbar-track,
 .editor-content::-webkit-scrollbar-track,
-.history-panel ul::-webkit-scrollbar-track {
+.history-panel ul::-webkit-scrollbar-track,
+.chat-input::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .chat-history::-webkit-scrollbar-thumb,
 .file-tree-container::-webkit-scrollbar-thumb,
 .editor-content::-webkit-scrollbar-thumb,
-.history-panel ul::-webkit-scrollbar-thumb {
+.history-panel ul::-webkit-scrollbar-thumb,
+.chat-input::-webkit-scrollbar-thumb {
   background-color: #555;
   border-radius: 4px;
   border: 2px solid transparent;
