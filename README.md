@@ -25,8 +25,8 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone <your-repository-url>
-cd <repository-directory>
+git clone https://github.com/Lianues/AIStudioBuildCopy
+cd AIStudioBuildCopy
 ```
 
 ### 2. 安装依赖
@@ -54,6 +54,7 @@ GEMINI_API_KEY=YOUR_API_KEY_HERE
 ### 4. 准备您的项目
 
 将您希望 AI 操作的代码文件放入项目根目录下的 `project/` 文件夹中。如果该文件夹不存在，请手动创建它。
+配置文件 `project/.aiignore` 来设置用于给ai提交的项目文件，同时也是不显示在前端的文件
 
 ## 🔧 如何运行
 
