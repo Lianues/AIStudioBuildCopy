@@ -20,6 +20,13 @@ interface Config {
     maxContextHistoryTurns?: number;
     optimizeCodeContext?: boolean;
     enableStreaming?: boolean;
+    modelParameters?: {
+        model: string;
+        temperature: number;
+        topP?: number;
+        topK?: number;
+        systemPromptPath: string;
+    };
 }
 
 let config: Config = {};
@@ -36,7 +43,14 @@ async function loadConfig(): Promise<void> {
             enableStreaming: true,
             maxContextHistoryTurns: -1,
             optimizeCodeContext: true,
-            displayTokenConsumption: { enabled: true, displayTypes: ["total"] }
+            displayTokenConsumption: { enabled: true, displayTypes: ["total"] },
+            modelParameters: {
+                model: "gemini-1.5-flash",
+                temperature: 0.7,
+                topP: 0.95,
+                topK: 40,
+                systemPromptPath: "SystemPrompt/ai的TSCli系统提示词.md"
+            }
         };
     }
 }
@@ -80,8 +94,19 @@ async function initializeChat(): Promise<void> {
     }
     genAI = new GoogleGenAI({ apiKey });
 
-    const systemInstructionPath = path.join(process.cwd(), 'SystemPrompt', 'ai的TSCli系统提示词.md');
-    systemInstruction = await fs.readFile(systemInstructionPath, 'utf-8');
+    systemInstruction = ''; // Default to empty string
+    const systemPromptPath = config.modelParameters?.systemPromptPath;
+
+    if (systemPromptPath) {
+        try {
+            const fullPath = path.join(process.cwd(), systemPromptPath);
+            systemInstruction = await fs.readFile(fullPath, 'utf-8');
+            console.log(`System prompt loaded successfully from: ${systemPromptPath}`);
+        } catch (error: any) {
+            console.error(`Could not load system prompt from ${systemPromptPath}: ${error.message}`);
+            // Fallback to empty string if file not found or other error
+        }
+    }
 }
 
 //<--- 新增历史记录简化逻辑 --->
@@ -237,13 +262,22 @@ export async function* generateChatResponseStream(
         const processedHistory = await getProcessedHistory(projectPath, chatHistory);
         const truncatedHistory = getTruncatedHistory(processedHistory);
 
+        const modelName = config.modelParameters?.model || 'gemini-1.5-flash';
+        const { temperature, topP, topK } = config.modelParameters || {};
+
+        const generationConfig: { temperature?: number; topP?: number; topK?: number } = {};
+        if (temperature !== undefined) generationConfig.temperature = temperature;
+        if (topP !== undefined) generationConfig.topP = topP;
+        if (topK !== undefined) generationConfig.topK = topK;
+
         const fullRequestForLogging = {
-            model: "gemini-2.5-flash",
+            model: modelName,
             contents: [
                 ...truncatedHistory,
                 { role: 'user', parts: [{ text: fullPrompt }] }
             ],
             systemInstruction: systemInstruction,
+            generationConfig: generationConfig
         };
 
         console.log('--- AI Request Body ---');
@@ -251,10 +285,11 @@ export async function* generateChatResponseStream(
         console.log('--------------------');
 
         const chat = genAI.chats.create({
-            model: "gemini-2.5-flash",
+            model: modelName,
             history: truncatedHistory,
             config: {
                 systemInstruction: systemInstruction,
+                ...generationConfig
             },
         });
 

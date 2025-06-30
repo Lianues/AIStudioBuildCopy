@@ -19,5 +19,18 @@
   // 启用后，如果检测到用户提交的代码与历史记录中的代码一致，将精简历史记录以减少token消耗
   "optimizeCodeContext": true,
   // 控制是否启用流式响应，以实时接收AI返回的内容
-  "enableStreaming": true
+  "enableStreaming": true,
+  // AI模型参数配置
+  "modelParameters": {
+    // 要使用的AI模型, 例如 "gemini-1.5-flash", "gemini-2.5-flash" 等
+    "model": "gemini-1.5-flash",
+    // 生成文本的温度，值越高，创造性越强 (Gemini 范围: 0.0 - 2.0)
+    "temperature": 0.7,
+    // Top-p (nucleus) aampling 的参数 (Gemini 范围: 0.0 - 1.0)
+    "topP": 0.95,
+    // Top-k sampling 的参数
+    "topK": 40,
+    // 系统提示词文件的路径，用于指导AI的行为。留空则不使用系统提示词
+    "systemPromptPath": "SystemPrompt/ai的TSCli系统提示词.md"
+  }
 }
