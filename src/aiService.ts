@@ -59,7 +59,16 @@ export interface FileChange {
     content?: string;
 }
 
-let chatHistory: Content[] = []; // Store conversation history globally
+// Map frontend message format to AI Content format
+const mapMessagesToContent = (messages: any[]): Content[] => {
+    return messages
+        .filter(msg => (msg.sender === 'user' || msg.sender === 'ai') && msg.type === 'text' && msg.text)
+        .map(msg => ({
+            role: msg.sender === 'ai' ? 'model' : 'user',
+            parts: [{ text: msg.fullText || msg.text }] // Use fullText if available
+        }));
+};
+
 let genAI: GoogleGenAI;
 let systemInstruction: string;
 
@@ -91,8 +100,8 @@ function parseUserMessageForFiles(messageText: string): { [filePath: string]: st
     return fileContentsMap;
 }
 
-async function getProcessedHistory(projectPath: string): Promise<Content[]> {
-    const currentHistory: Content[] = chatHistory;
+async function getProcessedHistory(projectPath: string, history: Content[]): Promise<Content[]> {
+    const currentHistory: Content[] = history;
     if (!config.optimizeCodeContext || currentHistory.length === 0) {
         return currentHistory;
     }
@@ -195,11 +204,16 @@ function getTruncatedHistory(processedHistory: Content[]): Content[] {
 export type StreamEvent =
   | { type: 'chunk'; content: string }
   | { type: 'token'; usage: any; displayTypes: string[] }
-  | { type: 'files'; files: string[] }
+  | { type: 'files'; files: string[]; fullPrompt: string }
   | { type: 'backup'; message: string; backupFolderName: string; userMessageId: number }
   | { type: 'error'; message: string };
 
-export async function* generateChatResponseStream(message: string, projectPath: string, userMessageId: number): AsyncGenerator<StreamEvent> {
+export async function* generateChatResponseStream(
+    message: string,
+    projectPath: string,
+    userMessageId: number,
+    clientHistory: any[] // Comes from frontend state
+): AsyncGenerator<StreamEvent> {
     const backupName = `${new Date().toISOString().replace(/[:.]/g, '-')}_initial`;
     const { created, folderName } = await createBackup(projectPath, backupName);
 
@@ -213,11 +227,14 @@ export async function* generateChatResponseStream(message: string, projectPath: 
 
     try {
         const { summary, includedFiles } = await createProjectSummary(projectPath, true);
-        yield { type: 'files', files: includedFiles }; // <-- 发送文件事件
-
         const fullPrompt = `${summary}\n\n---User Instruction---\n${message}`;
+        yield { type: 'files', files: includedFiles, fullPrompt };
 
-        const processedHistory = await getProcessedHistory(projectPath);
+        // Exclude the last message from clientHistory, as it's the current user prompt
+        // which is being combined with the file context in fullPrompt.
+        const historyForContext = clientHistory.slice(0, -1);
+        const chatHistory = mapMessagesToContent(historyForContext);
+        const processedHistory = await getProcessedHistory(projectPath, chatHistory);
         const truncatedHistory = getTruncatedHistory(processedHistory);
 
         const fullRequestForLogging = {
@@ -229,9 +246,9 @@ export async function* generateChatResponseStream(message: string, projectPath: 
             systemInstruction: systemInstruction,
         };
 
-        // console.log('--- AI Request Body ---');
-        // console.log(JSON.stringify(fullRequestForLogging, null, 2));
-        // console.log('--------------------');
+        console.log('--- AI Request Body ---');
+        console.log(JSON.stringify(fullRequestForLogging, null, 2));
+        console.log('--------------------');
 
         const chat = genAI.chats.create({
             model: "gemini-2.5-flash",
@@ -266,11 +283,7 @@ export async function* generateChatResponseStream(message: string, projectPath: 
                 yield { type: 'token', usage: result.usageMetadata, displayTypes: config.displayTokenConsumption.displayTypes || [] };
             }
         }
-
-        // Manually update the global history after a successful call
-        chatHistory.push({ role: 'user', parts: [{ text: fullPrompt }] });
-        chatHistory.push({ role: 'model', parts: [{ text: fullResponseText }] });
-
+        // No longer manually update history here; frontend is the source of truth.
     } catch (error: any) {
         console.error("Error calling Google AI:", error);
         yield { type: 'error', message: `Sorry, I encountered an error: ${error.message}` };

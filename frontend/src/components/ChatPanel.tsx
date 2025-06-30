@@ -1,16 +1,17 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { FileChange } from '../../../src/aiService';
 
 interface Message {
   sender: 'user' | 'ai';
   text: string;
-  id: number; // ID is now mandatory
+  id: number;
   type: 'text' | 'backup' | 'info' | 'error';
   changes?: FileChange[];
-  files?: string[]; // For user messages
-  tokenUsage?: any; // For AI messages
-  backupFolderName?: string; // For backup messages
-  userMessageId?: number; // To associate backups with user messages
+  files?: string[];
+  tokenUsage?: any;
+  backupFolderName?: string;
+  userMessageId?: number;
+  fullText?: string; // To store the full prompt with context
 }
 
 interface ChatPanelProps {
@@ -19,23 +20,17 @@ interface ChatPanelProps {
 
 const TokenUsageCard = ({ tokenUsage }: { tokenUsage: { usage: any, displayTypes: string[] } }) => {
   if (!tokenUsage || !tokenUsage.usage || !tokenUsage.displayTypes) return null;
-
   const { usage, displayTypes } = tokenUsage;
-
-  // Map API keys to the keys used in config.jsonc for filtering
   const apiKeyToConfigKey: { [key: string]: string } = {
     promptTokenCount: 'input',
     candidatesTokenCount: 'output',
     totalTokenCount: 'total',
     thoughtsTokenCount: 'thoughts'
   };
-
   const filteredUsage = Object.entries(usage).filter(([apiKey]) =>
     displayTypes.includes(apiKeyToConfigKey[apiKey])
   );
-
   if (filteredUsage.length === 0) return null;
-
   return (
     <div className="token-usage-card">
       <strong>Token Usage:</strong>
@@ -62,62 +57,45 @@ const FilesCard = ({ files }: { files?: string[] }) => {
   );
 };
 
-const AIMessageRenderer = React.memo(({ msg, onChangesParsed }: { msg: Message, onChangesParsed: (changes: FileChange[]) => void }) => {
-
+const AIMessageRenderer = React.memo(({ msg, onChangesParsed, historyJustLoaded }: { msg: Message, onChangesParsed: (changes: FileChange[]) => void, historyJustLoaded: boolean }) => {
   const parsedContent = useMemo(() => {
     const text = msg.text;
     const segments = [];
     const allChanges: FileChange[] = [];
-
     const changesStartTag = '<changes>';
     const changesEndTag = '</changes>';
-
     const startPos = text.indexOf(changesStartTag);
-
-    // If there's no <changes> block, it's all just text.
     if (startPos === -1) {
       segments.push({ type: 'text', content: text });
       return { segments, allChanges };
     }
-
-    // --- Text before the changes block ---
     segments.push({ type: 'text', content: text.substring(0, startPos) });
-
     const endPos = text.indexOf(changesEndTag, startPos);
-
-    // Determine the content within the <changes> block
     const changesContent = text.substring(startPos + changesStartTag.length, endPos === -1 ? text.length : endPos);
-
-    // --- The changes block itself ---
     const changeRegex = /<change type="(update|delete)">\s*<file>([\s\S]*?)<\/file>\s*<description>([\s\S]*?)<\/description>([\s\S]*?)<\/change>/g;
     let match;
     const parsedChangesInBlock: FileChange[] = [];
-
     while ((match = changeRegex.exec(changesContent)) !== null) {
       const [, type, file, description, innerContent] = match;
       const contentTag = /<content><!\[CDATA\[([\s\S]*?)\]\]><\/content>/;
       const contentMatch = innerContent.match(contentTag);
       const content = contentMatch ? contentMatch[1] : undefined;
-      
       const change: FileChange = { type: type as 'update' | 'delete', file, description, content };
       parsedChangesInBlock.push(change);
     }
-    
-    // Add the single changes block segment
     segments.push({ type: 'changes-block', changes: parsedChangesInBlock });
     allChanges.push(...parsedChangesInBlock);
-
-    // --- Text after the changes block (if it's closed) ---
     if (endPos !== -1) {
       segments.push({ type: 'text', content: text.substring(endPos + changesEndTag.length) });
     }
-
     return { segments, allChanges };
   }, [msg.text]);
 
   useEffect(() => {
-    onChangesParsed(parsedContent.allChanges);
-  }, [parsedContent.allChanges, onChangesParsed]);
+    if (!historyJustLoaded) {
+      onChangesParsed(parsedContent.allChanges);
+    }
+  }, [parsedContent.allChanges, onChangesParsed, historyJustLoaded]);
 
   return (
     <div style={{ whiteSpace: 'pre-wrap' }}>
@@ -141,7 +119,6 @@ const AIMessageRenderer = React.memo(({ msg, onChangesParsed }: { msg: Message, 
               </div>
             );
           }
-          // Render a header if the block has started but no changes are parsed yet
           return (
             <div key={index} className="changes-summary">
               <strong>Suggested Changes:</strong>
@@ -154,50 +131,75 @@ const AIMessageRenderer = React.memo(({ msg, onChangesParsed }: { msg: Message, 
   );
 });
 
+interface HistoryItem {
+  id: string;
+  title: string;
+}
+
 const ChatPanel: React.FC<ChatPanelProps> = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [cachedChanges, setCachedChanges] = useState<FileChange[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [needsSave, setNeedsSave] = useState(false);
+  const [historyJustLoaded, setHistoryJustLoaded] = useState(false);
+  const [hoveredMessageId, setHoveredMessageId] = useState<number | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState('');
   const chatHistoryRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const fetchHistory = useCallback(async () => {
+    try {
+      const response = await fetch('/api/history');
+      const data = await response.json();
+      setHistory(data);
+    } catch (error) {
+      console.error('Failed to fetch history:', error);
+    }
+  }, []);
 
   useEffect(() => {
-    // Persistent event source for global notifications like AI changes backups
-    const globalEventSource = new EventSource('http://localhost:3001/api/events');
+    if (showHistory) {
+      fetchHistory();
+    }
+  }, [showHistory, fetchHistory]);
 
+  useEffect(() => {
+    const globalEventSource = new EventSource('http://localhost:3001/api/events');
     globalEventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      // This handles backup messages from AI changes, which are global
       if (data.type === 'backup' && !data.userMessageId) {
-         const backupMessage: Message = {
-            id: Date.now(),
-            sender: 'ai',
-            type: 'backup',
-            text: data.message,
-            backupFolderName: data.backupFolderName
-         };
-         setMessages(prev => [...prev, backupMessage]);
+        const backupMessage: Message = {
+          id: Date.now(),
+          sender: 'ai',
+          type: 'backup',
+          text: data.message,
+          backupFolderName: data.backupFolderName
+        };
+        setMessages(prev => [...prev, backupMessage]);
+        setNeedsSave(true);
       }
-      // This handles successful restore messages
       if (data.type === 'info') {
         const infoMessage: Message = {
-            id: Date.now(),
-            sender: 'ai',
-            type: 'info',
-            text: data.message,
+          id: Date.now(),
+          sender: 'ai',
+          type: 'info',
+          text: data.message,
         };
         setMessages(prev => [...prev, infoMessage]);
       }
     };
-
     globalEventSource.onerror = (err) => {
       console.error('Global EventSource failed:', err);
     };
-
     return () => {
       globalEventSource.close();
     };
-  }, []); // Empty dependency array means this runs once on mount
+  }, []);
 
   useEffect(() => {
     if (chatHistoryRef.current) {
@@ -212,17 +214,13 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
     try {
       const response = await fetch('http://localhost:3001/api/project/restore', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ backupFolderName }),
       });
       const data = await response.json();
       if (data.success) {
-        // Instead of reloading, dispatch a custom event that other components can listen to.
         window.dispatchEvent(new CustomEvent('project-restored'));
       } else {
-        // You might want to show a more subtle notification here instead of an alert
         console.error('Restore failed:', data.error);
       }
     } catch (error) {
@@ -246,9 +244,46 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
     }
   };
 
+  useEffect(() => {
+    if (needsSave) {
+      const saveHistory = async () => {
+        if (messages.length === 0) {
+          setNeedsSave(false);
+          return;
+        }
+        try {
+          const response = await fetch('/api/history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages, id: currentChatId || undefined }),
+          });
+          const data = await response.json();
+          if (!currentChatId) {
+            setCurrentChatId(data.id);
+          }
+        } catch (error) {
+          console.error('Failed to save history:', error);
+        } finally {
+          setNeedsSave(false);
+        }
+      };
+      saveHistory();
+    }
+  }, [needsSave, messages, currentChatId]);
+
+  const handleStop = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsLoading(false);
+    setNeedsSave(true);
+  }, []);
+
   const handleSendMessage = async () => {
     if (inputValue.trim() === '') return;
 
+    setHistoryJustLoaded(false);
     const userMessageId = Date.now();
     const aiMessageId = userMessageId + 1;
 
@@ -256,152 +291,350 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
     const aiMessage: Message = { id: aiMessageId, sender: 'ai', text: '', type: 'text' };
 
     setCachedChanges([]);
-    setMessages((prevMessages) => [...prevMessages, userMessage, aiMessage]);
+    const newMessages = [...messages, userMessage];
+    setMessages([...newMessages, aiMessage]);
     setInputValue('');
     setIsLoading(true);
 
-    const eventSource = new EventSource(`/api/ai/chat?message=${encodeURIComponent(inputValue)}&userMessageId=${userMessageId}`);
+    const historyForApi = newMessages;
+    abortControllerRef.current = new AbortController();
 
-    eventSource.addEventListener('files', (event) => {
-        const data = JSON.parse(event.data);
-        setMessages((prevMessages) => prevMessages.map(msg =>
-            msg.id === userMessageId ? { ...msg, files: data.files } : msg
-        ));
-    });
+    try {
+      const response = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: inputValue,
+          history: historyForApi,
+          userMessageId: userMessageId
+        }),
+        signal: abortControllerRef.current.signal,
+      });
 
-    // This listener now ONLY handles backups tied to a user request
-    eventSource.addEventListener('backup', (event) => {
-      const data = JSON.parse(event.data);
-      if (data.userMessageId) {
-        const backupMessage: Message = {
-          id: Date.now(),
-          sender: 'ai',
-          type: 'backup',
-          text: data.message,
-          backupFolderName: data.backupFolderName,
-          userMessageId: data.userMessageId,
-        };
+      if (!response.body) throw new Error("No response body");
 
-        setMessages(prev => {
-          const userMsgIndex = prev.findIndex(msg => msg.id === backupMessage.userMessageId);
-          if (userMsgIndex !== -1) {
-            return [
-              ...prev.slice(0, userMsgIndex),
-              backupMessage,
-              ...prev.slice(userMsgIndex)
-            ];
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          handleStop();
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || '';
+
+        for (const block of lines) {
+          const eventMatch = block.match(/event: (.*)/);
+          const dataMatch = block.match(/data: (.*)/);
+
+          if (eventMatch && dataMatch) {
+            const eventType = eventMatch[1];
+            const data = JSON.parse(dataMatch[1]);
+
+            switch (eventType) {
+              case 'files':
+                setMessages((prev) =>
+                  prev.map(msg =>
+                    msg.id === userMessageId
+                      ? { ...msg, files: data.files, fullText: data.fullPrompt }
+                      : msg
+                  )
+                );
+                break;
+              case 'backup':
+                if (data.userMessageId) {
+                  const backupMessage: Message = {
+                    id: Date.now(),
+                    sender: 'ai',
+                    type: 'backup',
+                    text: data.message,
+                    backupFolderName: data.backupFolderName,
+                    userMessageId: data.userMessageId,
+                  };
+                  setMessages(prev => {
+                    const userMsgIndex = prev.findIndex(msg => msg.id === backupMessage.userMessageId);
+                    if (userMsgIndex !== -1) {
+                      return [...prev.slice(0, userMsgIndex), backupMessage, ...prev.slice(userMsgIndex)];
+                    }
+                    return [...prev, backupMessage];
+                  });
+                }
+                break;
+              case 'chunk':
+                setMessages((prev) => prev.map(msg => msg.id === aiMessageId ? { ...msg, text: msg.text + data.content } : msg));
+                break;
+              case 'token':
+                setMessages((prev) => prev.map(msg => msg.id === aiMessageId ? { ...msg, tokenUsage: data } : msg));
+                break;
+              case 'error':
+                throw new Error(data.message);
+            }
           }
-          return [...prev, backupMessage]; // Fallback
-        });
+        }
       }
-    });
-
-    eventSource.addEventListener('chunk', (event) => {
-      const data = JSON.parse(event.data);
-      setMessages((prevMessages) => prevMessages.map(msg =>
-        msg.id === aiMessageId ? { ...msg, text: msg.text + data.content } : msg
-      ));
-    });
-
-    eventSource.addEventListener('token', (event) => {
-        const data = JSON.parse(event.data); // data now contains { usage, displayTypes }
-        setMessages((prevMessages) => prevMessages.map(msg =>
-            msg.id === aiMessageId ? { ...msg, tokenUsage: data } : msg
-        ));
-    });
-
-    eventSource.addEventListener('done', () => {
-      eventSource.close();
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        console.log('Fetch aborted by user.');
+      } else {
+        console.error('Chat stream failed:', err);
+        const errorMessage: Message = {
+          id: aiMessageId,
+          sender: 'ai',
+          text: `Sorry, an error occurred: ${err.message}`,
+          type: 'error',
+        };
+        setMessages((prev) => prev.map(msg => msg.id === aiMessageId ? errorMessage : msg));
+      }
       setIsLoading(false);
-    });
-
-    eventSource.onerror = (err) => {
-      console.error('EventSource failed:', err);
-      const errorMessage: Message = {
-        id: aiMessageId,
-        sender: 'ai',
-        text: 'Sorry, something went wrong. Please try again.',
-        type: 'error',
-      };
-      setMessages((prevMessages) => prevMessages.map(msg => msg.id === aiMessageId ? errorMessage : msg));
-      eventSource.close();
-      setIsLoading(false);
-    };
+      setNeedsSave(true);
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
     }
   };
 
+  const handleNewChat = () => {
+    handleStop();
+    setMessages([]);
+    setCurrentChatId(null);
+  };
+
+  const handleRenameHistory = async (id: string, currentTitle: string) => {
+    const newTitle = prompt('Enter new title:', currentTitle);
+    if (newTitle && newTitle.trim() !== '') {
+      try {
+        await fetch(`/api/history/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: newTitle }),
+        });
+        fetchHistory();
+      } catch (error) {
+        console.error('Failed to rename history:', error);
+      }
+    }
+  };
+
+  const handleDeleteHistory = async (id: string) => {
+    if (confirm('Are you sure you want to delete this chat history?')) {
+      try {
+        await fetch(`/api/history/${id}`, {
+          method: 'DELETE',
+        });
+        fetchHistory();
+      } catch (error) {
+        console.error('Failed to delete history:', error);
+      }
+    }
+  };
+
+  const handleStartEdit = (message: Message) => {
+    setEditingMessageId(message.id);
+    setEditingText(message.text);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingMessageId(null);
+    setEditingText('');
+  };
+
+  const handleSaveEdit = () => {
+    if (editingMessageId === null) return;
+
+    setMessages(prevMessages =>
+      prevMessages.map(msg => {
+        if (msg.id === editingMessageId) {
+          const instructionRegex = /---User Instruction---([\s\S]*)/;
+          const newFullText = msg.fullText
+            ? msg.fullText.replace(instructionRegex, `---User Instruction---\n${editingText}`)
+            : ''; // Should have fullText, but fallback
+          return { ...msg, text: editingText, fullText: newFullText };
+        }
+        return msg;
+      })
+    );
+
+    setEditingMessageId(null);
+    setEditingText('');
+    setNeedsSave(true);
+  };
+
+  const handleDeleteMessage = (messageIdToDelete: number) => {
+    setMessages(prevMessages => prevMessages.filter(message => message.id !== messageIdToDelete));
+    setNeedsSave(true);
+  };
+
+  const handleLoadHistory = async (id: string) => {
+    handleStop();
+    setIsLoading(false);
+    try {
+      const response = await fetch(`/api/history/${id}`);
+      const data = await response.json();
+      setMessages(data.messages);
+      setCurrentChatId(data.id);
+      setShowHistory(false);
+      setCachedChanges([]);
+      setHistoryJustLoaded(true);
+    } catch (error) {
+      console.error('Failed to load history:', error);
+    }
+  };
+
   return (
-    <div className="chat-panel-container">
-      <div ref={chatHistoryRef} className="chat-history">
-        {messages.map((msg) => (
-          <div key={msg.id} className={`message ${msg.sender}-message`}>
-            <div className="message-bubble">
-              {(() => {
-                if (msg.type === 'backup') {
-                  return (
-                    <div>
-                      <p>{msg.text}</p>
-                      {msg.backupFolderName && (
-                        <button onClick={() => handleRestore(msg.backupFolderName!)} style={{ marginLeft: '10px', cursor: 'pointer' }}>
-                          恢复到此版本
-                        </button>
-                      )}
-                    </div>
-                  );
-                }
-                if (msg.sender === 'ai') {
-                  return <AIMessageRenderer msg={msg} onChangesParsed={setCachedChanges} />;
-                }
-                return <div style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</div>;
-              })()}
-              {msg.sender === 'user' && <FilesCard files={msg.files} />}
-              {msg.sender === 'ai' && msg.type !== 'backup' && <TokenUsageCard tokenUsage={msg.tokenUsage} />}
-            </div>
-          </div>
-        ))}
-        {isLoading && (
-          <div className="message ai-message">
-            <div className="message-bubble">
-              <div className="typing-indicator"><span></span><span></span><span></span></div>
-            </div>
-          </div>
-        )}
+    <>
+      <div className="chat-panel-header">
+        <h2>AI Chat</h2>
+        <div className="chat-header-buttons">
+          <button title="New Chat" className="header-button new-chat-button" onClick={handleNewChat}>+</button>
+          <button title="History" className="header-button history-button" onClick={() => setShowHistory(!showHistory)}>☰</button>
+        </div>
       </div>
-      <div className="chat-input-form">
-        <input
-          type="text"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyPress={handleKeyPress}
-          className="chat-input"
-          placeholder="Type your message..."
-          disabled={isLoading}
-        />
-        <button
-          type="button"
-          onClick={handleSendMessage}
-          disabled={isLoading}
-          className="send-button"
-        >
-          Send
-        </button>
-        {!isLoading && cachedChanges.length > 0 && (
-          <button
-            type="button"
-            onClick={handleApplyChanges}
-            className="apply-changes-button"
-          >
-            Apply Changes
-          </button>
-        )}
+      {showHistory && (
+        <div className="history-panel">
+          <h3>History</h3>
+          <ul>
+            {history.map((item) => (
+              <li key={item.id} >
+                <span className="history-item-title" onClick={() => handleLoadHistory(item.id)}>
+                  {item.title}
+                </span>
+                <div className="history-item-buttons">
+                  <button onClick={() => handleRenameHistory(item.id, item.title)} title="Rename">✏️</button>
+                  <button onClick={() => handleDeleteHistory(item.id)} title="Delete">🗑️</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="chat-panel-container">
+        <div ref={chatHistoryRef} className="chat-history">
+          {messages.map((msg) => (
+            <div
+              key={msg.id}
+              className="message-wrapper"
+              onMouseEnter={() => setHoveredMessageId(msg.id)}
+              onMouseLeave={() => setHoveredMessageId(null)}
+            >
+              <div className={`message ${msg.sender}-message`}>
+                <div className="message-bubble">
+                  {(() => {
+                    if (msg.type === 'backup') {
+                      return (
+                        <div>
+                          <p>{msg.text}</p>
+                          {msg.backupFolderName && (
+                            <button onClick={() => handleRestore(msg.backupFolderName!)} style={{ marginLeft: '10px', cursor: 'pointer' }}>
+                              恢复到此版本
+                            </button>
+                          )}
+                        </div>
+                      );
+                    }
+                    if (msg.sender === 'ai') {
+                      return <AIMessageRenderer msg={msg} onChangesParsed={setCachedChanges} historyJustLoaded={historyJustLoaded} />;
+                    }
+                    // User message editing UI
+                    if (editingMessageId === msg.id) {
+                      return (
+                        <div className="edit-container">
+                          <textarea
+                            value={editingText}
+                            onChange={(e) => setEditingText(e.target.value)}
+                            className="edit-textarea"
+                            rows={Math.max(3, editingText.split('\n').length)}
+                          />
+                          <div className="edit-buttons">
+                            <button onClick={handleSaveEdit}>Save</button>
+                            <button onClick={handleCancelEdit}>Cancel</button>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return <div style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</div>;
+                  })()}
+                  {editingMessageId !== msg.id && msg.sender === 'user' && <FilesCard files={msg.files} />}
+                  {editingMessageId !== msg.id && msg.sender === 'ai' && msg.type !== 'backup' && <TokenUsageCard tokenUsage={msg.tokenUsage} />}
+                </div>
+              </div>
+              {hoveredMessageId === msg.id && !editingMessageId && (
+                <div className={`message-actions ${msg.sender === 'user' ? 'message-actions-user' : 'message-actions-ai'}`}>
+                  {msg.sender === 'user' && (
+                    <button
+                      onClick={() => handleStartEdit(msg)}
+                      className="action-button"
+                      title="Edit message"
+                    >
+                      ✏️
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleDeleteMessage(msg.id)}
+                    className="action-button"
+                    title="Delete message"
+                  >
+                    🗑️
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {isLoading && (
+            <div className="message ai-message">
+              <div className="message-bubble">
+                <div className="typing-indicator"><span></span><span></span><span></span></div>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="chat-input-form">
+          <input
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyPress={handleKeyPress}
+            className="chat-input"
+            placeholder="Type your message..."
+            disabled={isLoading}
+          />
+          {isLoading ? (
+            <button
+              type="button"
+              onClick={handleStop}
+              className="send-button stop-button"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSendMessage}
+              className="send-button"
+            >
+              Send
+            </button>
+          )}
+          {!isLoading && cachedChanges.length > 0 && (
+            <button
+              type="button"
+              onClick={handleApplyChanges}
+              className="apply-changes-button"
+            >
+              Apply Changes
+            </button>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 };
 

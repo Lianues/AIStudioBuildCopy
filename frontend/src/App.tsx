@@ -90,7 +90,6 @@ function App() {
         <Editor fileContent={fileContent} />
       </div>
       <div className="panel chat-panel">
-        <h2>AI Chat</h2>
         <ChatPanel />
       </div>
     </div>
