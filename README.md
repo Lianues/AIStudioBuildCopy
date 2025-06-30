@@ -1,4 +1,4 @@
-# AI-Powered Web IDE
+# AIStudioBuildCopy
 
 这是一个基于 Web 的交互式集成开发环境（IDE），它利用 Google Gemini AI 的强大功能来辅助代码的编写、理解和修改。用户可以通过自然语言与 AI 对话，AI 能够读取和修改指定项目目录中的文件，从而实现智能化的代码生成与重构。
 
