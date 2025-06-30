@@ -1,0 +1,22 @@
+{
+  "name": "my-cli-app",
+  "version": "1.0.0",
+  "description": "A simple CLI application",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "commander": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/commander": "^11.0.0",
+    "@types/node": "^20.4.1",
+    "typescript": "^5.1.3"
+  }
+}

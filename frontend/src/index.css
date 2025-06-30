@@ -1,0 +1,130 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Light Theme (Default) */
+  --background-color: #ffffff;
+  --text-color: #213547;
+  --panel-bg-color: #f7f7f7;
+  --panel-header-bg-color: #e9e9e9;
+  --border-color: #ddd;
+  --input-border-color: #ccc;
+  --placeholder-text-color: #666;
+  --editor-bg-color: #fff;
+  --chat-bg-color: #fff;
+  --chat-input-bg-color: #f7f7f7;
+
+  --button-bg-color: #f9f9f9;
+  --button-text-color: #213547;
+  --button-hover-border-color: #646cff;
+
+  --button-primary-bg-color: #007bff;
+  --button-primary-text-color: #ffffff;
+  --button-primary-disabled-bg-color: #a0c7ff;
+  
+  --link-hover-color: #747bff;
+
+  --user-message-bg-color: #007bff;
+  --user-message-text-color: #ffffff;
+  --ai-message-bg-color: #e9ecef;
+  --ai-message-text-color: #333;
+  --file-node-hover-bg-color: #e9e9e9;
+  --file-node-text-color: #333;
+  --apply-changes-button-border-color: #007bff;
+  --apply-changes-button-bg-color: white;
+  --apply-changes-button-text-color: #007bff;
+  --apply-changes-button-hover-bg-color: #007bff;
+  --apply-changes-button-hover-text-color: white;
+
+  color: var(--text-color);
+  background-color: var(--background-color);
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+}
+
+
+h1 {
+  font-size: 3.2em;
+  line-height: 1.1;
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: var(--button-bg-color);
+  color: var(--button-text-color);
+  cursor: pointer;
+  transition: border-color 0.25s;
+}
+button:hover {
+  border-color: var(--button-hover-border-color);
+}
+button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+}
+
+a:hover {
+  color: var(--link-hover-color);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background-color: #242424;
+    --text-color: rgba(255, 255, 255, 0.87);
+    --panel-bg-color: #1a1a1a;
+    --panel-header-bg-color: #2a2a2a;
+    --border-color: #3a3a3a;
+    --input-border-color: #4a4a4a;
+    --placeholder-text-color: #888;
+    --editor-bg-color: #1e1e1e;
+    --chat-bg-color: #1e1e1e;
+    --chat-input-bg-color: #1a1a1a;
+
+    --button-bg-color: #1a1a1a;
+    --button-text-color: rgba(255, 255, 255, 0.87);
+    --button-hover-border-color: #646cff;
+
+    --button-primary-bg-color: #007bff;
+    --button-primary-text-color: #ffffff;
+    --button-primary-disabled-bg-color: #004a99;
+
+    --link-hover-color: #535bf2;
+
+    --user-message-bg-color: #007bff;
+    --user-message-text-color: #ffffff;
+    --ai-message-bg-color: #3a3a3a;
+    --ai-message-text-color: rgba(255, 255, 255, 0.87);
+    --file-node-hover-bg-color: #2a2a2a;
+    --file-node-text-color: rgba(255, 255, 255, 0.87);
+    --apply-changes-button-border-color: #007bff;
+    --apply-changes-button-bg-color: #1e1e1e;
+    --apply-changes-button-text-color: #007bff;
+    --apply-changes-button-hover-bg-color: #007bff;
+    --apply-changes-button-hover-text-color: #1e1e1e;
+  }
+}
