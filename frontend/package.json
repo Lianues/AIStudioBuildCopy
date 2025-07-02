@@ -10,9 +10,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@vitejs/plugin-react": "^4.6.0",
     "fast-xml-parser": "^4.4.0",
+    "monaco-editor": "^0.52.2",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "vite-plugin-monaco-editor": "^1.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.29.0",

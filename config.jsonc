@@ -40,7 +40,7 @@
     // OpenAI兼容API的基础URL
     "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai/",
     // 要使用的AI模型, 例如 "gpt-4-turbo", "gpt-3.5-turbo" 等
-    "model": "gemini-2.5-pro",
+    "model": "gemini-2.5-flash",
     // 生成文本的温度
     "temperature": 0.1,
     // Top-p (nucleus) sampling 的参数

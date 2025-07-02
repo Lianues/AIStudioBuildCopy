@@ -1,17 +1,19 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { FileChange } from '../../../src/aiService';
+import type { DiagnosticInfo } from '../../../src/tsDiagnostics';
 
 interface Message {
   sender: 'user' | 'ai';
   text: string;
   id: number;
-  type: 'text' | 'backup' | 'info' | 'error';
+  type: 'text' | 'backup' | 'info' | 'error' | 'diagnostic';
   changes?: FileChange[];
   files?: string[];
   tokenUsage?: any;
   backupFolderName?: string;
   userMessageId?: number;
-  fullText?: string; // To store the full prompt with context
+  fullText?: string;
+  diagnosticCount?: number;
 }
 
 interface ChatPanelProps {
@@ -56,6 +58,7 @@ const FilesCard = ({ files }: { files?: string[] }) => {
     </div>
   );
 };
+
 
 const AIMessageRenderer = React.memo(({ msg, onChangesParsed, historyJustLoaded }: { msg: Message, onChangesParsed: (changes: FileChange[]) => void, historyJustLoaded: boolean }) => {
   const parsedContent = useMemo(() => {
@@ -149,9 +152,15 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
   const [hoveredMessageId, setHoveredMessageId] = useState<number | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
   const [editingText, setEditingText] = useState('');
+  const [diagnosticErrorCount, setDiagnosticErrorCount] = useState(0);
   const chatHistoryRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  const isLoadingRef = useRef(isLoading);
+  useEffect(() => {
+    isLoadingRef.current = isLoading;
+  }, [isLoading]);
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -169,11 +178,38 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
     }
   }, [showHistory, fetchHistory]);
 
+  const handleSendMessage = useCallback(async (text: string) => {
+    if (text.trim() === '') return;
+
+    setHistoryJustLoaded(false);
+    const userMessageId = Date.now();
+    const aiMessageId = userMessageId + 1;
+
+    const userMessage: Message = { id: userMessageId, sender: 'user', text, type: 'text' };
+    const aiMessage: Message = { id: aiMessageId, sender: 'ai', text: '', type: 'text' };
+
+    setCachedChanges([]);
+    const newMessages = [...messages, userMessage];
+    setMessages([...newMessages, aiMessage]);
+    setInputValue('');
+    setIsLoading(true);
+    setDiagnosticErrorCount(0);
+
+    const historyForApi = newMessages;
+    await executeChatRequest(text, historyForApi, userMessageId, aiMessageId);
+  }, [messages]);
+
   useEffect(() => {
-    const globalEventSource = new EventSource('http://localhost:3001/api/events');
+    const globalEventSource = new EventSource('/api/events');
+    
     globalEventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      if (data.type === 'backup' && !data.userMessageId) {
+      
+      if (data.type === 'diagnostics-complete') {
+        if (!isLoadingRef.current) {
+          setDiagnosticErrorCount(data.count);
+        }
+      } else if (data.type === 'backup' && !data.userMessageId) {
         const backupMessage: Message = {
           id: Date.now(),
           sender: 'ai',
@@ -183,8 +219,7 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
         };
         setMessages(prev => [...prev, backupMessage]);
         setNeedsSave(true);
-      }
-      if (data.type === 'info') {
+      } else if (data.type === 'info') {
         const infoMessage: Message = {
           id: Date.now(),
           sender: 'ai',
@@ -203,10 +238,28 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
   }, []);
 
   useEffect(() => {
+    const fetchInitialDiagnostics = async () => {
+      try {
+        const response = await fetch('/api/project/diagnostics');
+        if (response.ok) {
+          const diagnostics: DiagnosticInfo[] = await response.json();
+          if (!isLoadingRef.current) {
+            setDiagnosticErrorCount(diagnostics.length);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch initial diagnostics:', error);
+      }
+    };
+
+    fetchInitialDiagnostics();
+  }, []);
+
+  useEffect(() => {
     if (chatHistoryRef.current) {
       chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, diagnosticErrorCount]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -390,24 +443,29 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
     }
   };
 
-  const handleSendMessage = async () => {
-    if (inputValue.trim() === '') return;
+  const handleFixErrors = async () => {
+    try {
+      const response = await fetch('/api/project/diagnostics');
+      const diagnostics: DiagnosticInfo[] = await response.json();
+      if (diagnostics.length === 0) {
+        alert('No errors found!');
+        setDiagnosticErrorCount(0);
+        return;
+      }
+      
+      let prompt = 'Please fix the following TypeScript errors in the project:\n\n';
+      diagnostics.forEach(d => {
+        prompt += `File: ${d.filePath}\n`;
+        prompt += `Line ${d.lineNumber}: ${d.lineText}\n`;
+        prompt += `Error: ${d.message}\n\n`;
+      });
 
-    setHistoryJustLoaded(false);
-    const userMessageId = Date.now();
-    const aiMessageId = userMessageId + 1;
+      handleSendMessage(prompt);
 
-    const userMessage: Message = { id: userMessageId, sender: 'user', text: inputValue, type: 'text' };
-    const aiMessage: Message = { id: aiMessageId, sender: 'ai', text: '', type: 'text' };
-
-    setCachedChanges([]);
-    const newMessages = [...messages, userMessage];
-    setMessages([...newMessages, aiMessage]);
-    setInputValue('');
-    setIsLoading(true);
-
-    const historyForApi = newMessages;
-    await executeChatRequest(inputValue, historyForApi, userMessageId, aiMessageId);
+    } catch (error) {
+      console.error('Failed to fetch diagnostics:', error);
+      alert('Could not fetch project errors.');
+    }
   };
 
   const handleRetry = async (erroringMessage: Message) => {
@@ -420,11 +478,9 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
     setIsLoading(true);
     setHistoryJustLoaded(false);
 
-    // Replace the error message with a new pending AI message
     const newAiMessage: Message = { id: erroringMessage.id, sender: 'ai', text: '', type: 'text' };
     setMessages(prev => prev.map(msg => msg.id === erroringMessage.id ? newAiMessage : msg));
 
-    // Prepare history for API. It should be all messages up to and including the user message.
     const userMessageIndex = messages.findIndex(msg => msg.id === userMessageId);
     if (userMessageIndex === -1) return;
     const historyForApi = messages.slice(0, userMessageIndex + 1);
@@ -435,7 +491,7 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
   const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSendMessage();
+      handleSendMessage(inputValue);
     }
   };
 
@@ -493,7 +549,7 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
           const instructionRegex = /---User Instruction---([\s\S]*)/;
           const newFullText = msg.fullText
             ? msg.fullText.replace(instructionRegex, `---User Instruction---\n${editingText}`)
-            : ''; // Should have fullText, but fallback
+            : '';
           return { ...msg, text: editingText, fullText: newFullText };
         }
         return msg;
@@ -592,7 +648,6 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
                       }
                       return <AIMessageRenderer msg={msg} onChangesParsed={setCachedChanges} historyJustLoaded={historyJustLoaded} />;
                     }
-                    // User message editing UI
                     if (editingMessageId === msg.id) {
                       return (
                         <div className="edit-container">
@@ -644,6 +699,16 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
               </div>
             </div>
           )}
+          {!isLoading && diagnosticErrorCount > 0 && (
+            <div className="message ai-message">
+              <div className="message-bubble">
+                <p>在项目中发现 {diagnosticErrorCount} 个 TypeScript 错误。</p>
+                <button onClick={handleFixErrors} style={{ marginLeft: '10px', cursor: 'pointer' }}>
+                  修复错误
+                </button>
+              </div>
+            </div>
+          )}
         </div>
         <div className="chat-input-form">
           <textarea
@@ -672,7 +737,7 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
           ) : (
             <button
               type="button"
-              onClick={handleSendMessage}
+              onClick={() => handleSendMessage(inputValue)}
               className="send-button"
             >
               Send

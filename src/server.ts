@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import * as aiService from './aiService';
 import { applyChanges } from './changeApplier';
 import { restoreBackup } from './archiver';
+import { getProjectDiagnostics } from './tsDiagnostics';
 import { watch } from 'chokidar';
 import SSE from 'express-sse';
 import killPort from 'kill-port';
@@ -39,7 +40,6 @@ const saveHistoryHandler: RequestHandler = async (req, res): Promise<void> => {
     const id = existingId || uuidv4();
     const filePath = path.join(historyDir, `${id}.json`);
     
-    // Create a title from the first user message
     const firstUserMessage = messages.find((m: any) => m.sender === 'user');
     const title = firstUserMessage ? firstUserMessage.text.substring(0, 50) : 'New Chat';
 
@@ -156,6 +156,42 @@ app.get('/api/files/content', async (req, res) => {
   }
 });
 
+app.post('/api/files/content', async (req, res): Promise<void> => {
+  const { path: relativePath, content } = req.body;
+
+  if (!relativePath || content === undefined) {
+    res.status(400).json({ error: 'File path and content are required' });
+    return;
+  }
+
+  try {
+    const absolutePath = path.resolve(projectDir, relativePath);
+    await fs.writeFile(absolutePath, content, 'utf-8');
+    res.json({ success: true, message: 'File saved successfully.' });
+  } catch (error) {
+    console.error(`Failed to write file ${relativePath}:`, error);
+    res.status(500).json({ error: 'Failed to save file' });
+  }
+});
+
+app.delete('/api/files/content', async (req, res): Promise<void> => {
+  const relativePath = req.query.path as string;
+
+  if (!relativePath) {
+    res.status(400).json({ error: 'File path is required' });
+    return;
+  }
+
+  try {
+    const absolutePath = path.resolve(projectDir, relativePath);
+    await fs.unlink(absolutePath);
+    res.json({ success: true, message: 'File deleted successfully.' });
+  } catch (error) {
+    console.error(`Failed to delete file ${relativePath}:`, error);
+    res.status(500).json({ error: 'Failed to delete file' });
+  }
+});
+
 const aiChatHandler: RequestHandler = async (req, res): Promise<void> => {
   const { message, history, userMessageId } = req.body;
 
@@ -177,7 +213,6 @@ const aiChatHandler: RequestHandler = async (req, res): Promise<void> => {
   try {
     const stream = aiService.generateChatResponseStream(message, projectDir, userMessageId, history);
     for await (const event of stream) {
-      // Act as a simple proxy, forwarding events to the client.
       sendEvent(event.type, event);
     }
   } catch (error) {
@@ -236,6 +271,23 @@ app.get('/', (req, res) => {
   res.json({ message: 'API server is running' });
 });
 
+let latestDiagnostics: any[] = [];
+
+async function runDiagnosticsAndNotify() {
+  try {
+    console.log('Running TypeScript diagnostics...');
+    latestDiagnostics = await getProjectDiagnostics(projectDir);
+    console.log(`Diagnostics complete. Found ${latestDiagnostics.length} issues.`);
+    sse.send({ type: 'diagnostics-complete', count: latestDiagnostics.length });
+  } catch (error) {
+    console.error('Failed to run diagnostics:', error);
+  }
+}
+
+app.get('/api/project/diagnostics', (req, res) => {
+  res.json(latestDiagnostics);
+});
+
 async function startServer() {
   const server = app.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`);
@@ -252,10 +304,25 @@ async function startServer() {
   };
 
   watcher
-    .on('add', (absolutePath) => sendSseEvent('add', absolutePath))
+    .on('add', (absolutePath) => {
+      sendSseEvent('add', absolutePath);
+      if (absolutePath.endsWith('.ts') || absolutePath.endsWith('.tsx')) {
+        runDiagnosticsAndNotify();
+      }
+    })
     .on('addDir', (absolutePath) => sendSseEvent('add', absolutePath))
-    .on('change', (absolutePath) => sendSseEvent('change', absolutePath))
-    .on('unlink', (absolutePath) => sendSseEvent('unlink', absolutePath))
+    .on('change', (absolutePath) => {
+      sendSseEvent('change', absolutePath);
+      if (absolutePath.endsWith('.ts') || absolutePath.endsWith('.tsx')) {
+        runDiagnosticsAndNotify();
+      }
+    })
+    .on('unlink', (absolutePath) => {
+      sendSseEvent('unlink', absolutePath);
+      if (absolutePath.endsWith('.ts') || absolutePath.endsWith('.tsx')) {
+        runDiagnosticsAndNotify();
+      }
+    })
     .on('unlinkDir', (absolutePath) => sendSseEvent('unlink', absolutePath));
 
   const gracefulShutdown = (signal: string) => {
@@ -266,13 +333,13 @@ async function startServer() {
     });
   };
 
-  // For nodemon restarts
   process.once('SIGUSR2', () => gracefulShutdown('SIGUSR2'));
-
-  // For app termination
   process.on('SIGINT', () => gracefulShutdown('SIGINT'));
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
   process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));
+
+  // Initial diagnostics run
+  runDiagnosticsAndNotify();
 }
 
 startServer();

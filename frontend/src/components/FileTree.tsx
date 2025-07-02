@@ -14,7 +14,7 @@ interface FileNodeProps {
   onFileSelect: (path: string) => void;
   expanded: { [key: string]: boolean };
   path: string;
-  selectedFile: string;
+  selectedFile: string | null;
 }
 
 const FileNode: React.FC<FileNodeProps> = ({ node, onToggle, onFileSelect, expanded, path, selectedFile }) => {
@@ -68,7 +68,7 @@ interface FileTreeProps {
   loading: boolean;
   error: string | null;
   onFileSelect: (path: string) => void;
-  selectedFile: string;
+  selectedFile: string | null;
 }
 
 const FileTree: React.FC<FileTreeProps> = ({ files, loading, error, onFileSelect, selectedFile }) => {
