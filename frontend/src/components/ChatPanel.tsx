@@ -290,23 +290,7 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
     setNeedsSave(true);
   }, []);
 
-  const handleSendMessage = async () => {
-    if (inputValue.trim() === '') return;
-
-    setHistoryJustLoaded(false);
-    const userMessageId = Date.now();
-    const aiMessageId = userMessageId + 1;
-
-    const userMessage: Message = { id: userMessageId, sender: 'user', text: inputValue, type: 'text' };
-    const aiMessage: Message = { id: aiMessageId, sender: 'ai', text: '', type: 'text' };
-
-    setCachedChanges([]);
-    const newMessages = [...messages, userMessage];
-    setMessages([...newMessages, aiMessage]);
-    setInputValue('');
-    setIsLoading(true);
-
-    const historyForApi = newMessages;
+  const executeChatRequest = async (messageText: string, historyForApi: Message[], userMessageId: number, aiMessageId: number) => {
     abortControllerRef.current = new AbortController();
 
     try {
@@ -314,7 +298,7 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: inputValue,
+          message: messageText,
           history: historyForApi,
           userMessageId: userMessageId
         }),
@@ -397,6 +381,7 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
           sender: 'ai',
           text: `Sorry, an error occurred: ${err.message}`,
           type: 'error',
+          userMessageId: userMessageId,
         };
         setMessages((prev) => prev.map(msg => msg.id === aiMessageId ? errorMessage : msg));
       }
@@ -404,6 +389,48 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
       setNeedsSave(true);
     }
   };
+
+  const handleSendMessage = async () => {
+    if (inputValue.trim() === '') return;
+
+    setHistoryJustLoaded(false);
+    const userMessageId = Date.now();
+    const aiMessageId = userMessageId + 1;
+
+    const userMessage: Message = { id: userMessageId, sender: 'user', text: inputValue, type: 'text' };
+    const aiMessage: Message = { id: aiMessageId, sender: 'ai', text: '', type: 'text' };
+
+    setCachedChanges([]);
+    const newMessages = [...messages, userMessage];
+    setMessages([...newMessages, aiMessage]);
+    setInputValue('');
+    setIsLoading(true);
+
+    const historyForApi = newMessages;
+    await executeChatRequest(inputValue, historyForApi, userMessageId, aiMessageId);
+  };
+
+  const handleRetry = async (erroringMessage: Message) => {
+    const userMessageId = erroringMessage.userMessageId;
+    if (!userMessageId) return;
+
+    const userMessage = messages.find(msg => msg.id === userMessageId);
+    if (!userMessage) return;
+
+    setIsLoading(true);
+    setHistoryJustLoaded(false);
+
+    // Replace the error message with a new pending AI message
+    const newAiMessage: Message = { id: erroringMessage.id, sender: 'ai', text: '', type: 'text' };
+    setMessages(prev => prev.map(msg => msg.id === erroringMessage.id ? newAiMessage : msg));
+
+    // Prepare history for API. It should be all messages up to and including the user message.
+    const userMessageIndex = messages.findIndex(msg => msg.id === userMessageId);
+    if (userMessageIndex === -1) return;
+    const historyForApi = messages.slice(0, userMessageIndex + 1);
+
+    await executeChatRequest(userMessage.text, historyForApi, userMessage.id, erroringMessage.id);
+  }
 
   const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -551,6 +578,18 @@ const ChatPanel: React.FC<ChatPanelProps> = () => {
                       );
                     }
                     if (msg.sender === 'ai') {
+                      if (msg.type === 'error') {
+                        return (
+                          <div>
+                            <span style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</span>
+                            {msg.userMessageId && (
+                              <button onClick={() => handleRetry(msg)} style={{ marginLeft: '10px', cursor: 'pointer' }}>
+                                Retry
+                              </button>
+                            )}
+                          </div>
+                        );
+                      }
                       return <AIMessageRenderer msg={msg} onChangesParsed={setCachedChanges} historyJustLoaded={historyJustLoaded} />;
                     }
                     // User message editing UI

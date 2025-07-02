@@ -17,7 +17,8 @@ const port = 3001;
 const sse = new SSE();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10gb' }));
+app.use(express.urlencoded({ limit: '10gb', extended: true }));
 
 app.get('/api/events', sse.init);
 
