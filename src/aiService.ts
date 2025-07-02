@@ -3,7 +3,8 @@
  * @param text The text containing the XML block.
  * @returns The extracted XML string, or an empty string if not found.
  */
-import { GoogleGenAI, GoogleGenAIOptions, Content } from '@google/genai';
+import { GoogleGenAI, Content } from '@google/genai';
+import OpenAI from 'openai';
 import { XMLParser } from 'fast-xml-parser';
 import 'dotenv/config';
 import { promises as fs } from 'fs';
@@ -13,6 +14,7 @@ import { createBackup } from './archiver';
 
 //<--- 新增配置接口和加载函数 --->
 interface Config {
+    apiProvider?: 'gemini' | 'openai';
     displayTokenConsumption?: {
         enabled: boolean;
         displayTypes: string[];
@@ -20,11 +22,18 @@ interface Config {
     maxContextHistoryTurns?: number;
     optimizeCodeContext?: boolean;
     enableStreaming?: boolean;
-    modelParameters?: {
+    modelParameters?: { // Gemini-specific
         model: string;
         temperature: number;
         topP?: number;
         topK?: number;
+        systemPromptPath: string;
+    };
+    openaiParameters?: { // OpenAI-specific
+        baseURL: string;
+        model: string;
+        temperature: number;
+        topP?: number;
         systemPromptPath: string;
     };
 }
@@ -35,7 +44,7 @@ async function loadConfig(): Promise<void> {
     try {
         const configPath = path.join(process.cwd(), 'config.jsonc');
         const configFileContent = await fs.readFile(configPath, 'utf-8');
-        const contentWithoutComments = configFileContent.replace(/\/\/.*$|\/\*[\s\S]*?\*\//gm, '');
+        const contentWithoutComments = configFileContent.replace(/(?<!:)\/\/.*$|\/\*[\s\S]*?\*\//gm, '');
         config = JSON.parse(contentWithoutComments);
     } catch (error: any) {
         console.error(`Error loading config.jsonc: ${error.message}. Using default values.`);
@@ -45,11 +54,11 @@ async function loadConfig(): Promise<void> {
             optimizeCodeContext: true,
             displayTokenConsumption: { enabled: true, displayTypes: ["total"] },
             modelParameters: {
-                model: "gemini-1.5-flash",
-                temperature: 0.7,
+                model: "gemini-2.5-flash",
+                temperature: 0.1,
                 topP: 0.95,
                 topK: 40,
-                systemPromptPath: "SystemPrompt/ai的TSCli系统提示词.md"
+                systemPromptPath: "SystemPrompt/ai的TS系统提示词.md"
             }
         };
     }
@@ -84,18 +93,36 @@ const mapMessagesToContent = (messages: any[]): Content[] => {
 };
 
 let genAI: GoogleGenAI;
+let openai: OpenAI;
 let systemInstruction: string;
 
 async function initializeChat(): Promise<void> {
     await loadConfig();
-    const apiKey = process.env.GEMINI_API_KEY as string;
-    if (!apiKey) {
-        throw new Error("GEMINI_API_KEY environment variable not set.");
+    
+    const provider = config.apiProvider || 'gemini';
+    console.log(`Initializing AI service with provider: ${provider}`);
+
+    if (provider === 'gemini') {
+        const apiKey = process.env.GEMINI_API_KEY as string;
+        if (!apiKey) {
+            throw new Error("GEMINI_API_KEY environment variable not set for Gemini provider.");
+        }
+        genAI = new GoogleGenAI({ apiKey });
+    } else if (provider === 'openai') {
+        const apiKey = process.env.OPENAI_API_KEY as string;
+        if (!apiKey) {
+            throw new Error("OPENAI_API_KEY environment variable not set for OpenAI provider.");
+        }
+        openai = new OpenAI({
+            apiKey: apiKey,
+            baseURL: config.openaiParameters?.baseURL,
+        });
     }
-    genAI = new GoogleGenAI({ apiKey });
 
     systemInstruction = ''; // Default to empty string
-    const systemPromptPath = config.modelParameters?.systemPromptPath;
+    const systemPromptPath = provider === 'gemini'
+        ? config.modelParameters?.systemPromptPath
+        : config.openaiParameters?.systemPromptPath;
 
     if (systemPromptPath) {
         try {
@@ -104,7 +131,6 @@ async function initializeChat(): Promise<void> {
             console.log(`System prompt loaded successfully from: ${systemPromptPath}`);
         } catch (error: any) {
             console.error(`Could not load system prompt from ${systemPromptPath}: ${error.message}`);
-            // Fallback to empty string if file not found or other error
         }
     }
 }
@@ -233,94 +259,177 @@ export type StreamEvent =
   | { type: 'backup'; message: string; backupFolderName: string; userMessageId: number }
   | { type: 'error'; message: string };
 
+//<--- 新增OpenAI消息映射函数 --->
+const mapMessagesToOpenAIFormat = (messages: any[]): OpenAI.Chat.Completions.ChatCompletionMessageParam[] => {
+    return messages
+        .filter(msg => (msg.sender === 'user' || msg.sender === 'ai') && msg.type === 'text' && msg.text)
+        .map(msg => ({
+            role: msg.sender === 'ai' ? 'assistant' : 'user',
+            content: msg.fullText || msg.text
+        }));
+};
+
+async function* generateGeminiResponseStream(
+    fullPrompt: string,
+    truncatedHistory: Content[]
+): AsyncGenerator<StreamEvent> {
+    const modelName = config.modelParameters?.model || 'gemini-1.5-flash';
+    const { temperature, topP, topK } = config.modelParameters || {};
+
+    const generationConfig: { temperature?: number; topP?: number; topK?: number } = {};
+    if (temperature !== undefined) generationConfig.temperature = temperature;
+    if (topP !== undefined) generationConfig.topP = topP;
+    if (topK !== undefined) generationConfig.topK = topK;
+
+    console.log('--- AI Request Body (Gemini) ---');
+    console.log(JSON.stringify({ model: modelName, history: truncatedHistory, prompt: fullPrompt, ...generationConfig }, null, 2));
+    console.log('--------------------');
+
+    const chat = genAI.chats.create({
+        model: modelName,
+        history: truncatedHistory,
+        config: { systemInstruction, ...generationConfig },
+    });
+
+    if (config.enableStreaming) {
+        const stream = await chat.sendMessageStream({ message: fullPrompt });
+        let usageMetadata;
+        for await (const chunk of stream) {
+            const chunkText = chunk.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+            if (chunkText) yield { type: 'chunk', content: chunkText };
+            if (chunk.usageMetadata) usageMetadata = chunk.usageMetadata;
+        }
+        if (config.displayTokenConsumption?.enabled && usageMetadata) {
+            console.log('--- AI Usage Metadata (Gemini Stream) ---');
+            console.log(JSON.stringify({ usageMetadata }, null, 2));
+            console.log('---------------------------------');
+            yield { type: 'token', usage: usageMetadata, displayTypes: config.displayTokenConsumption.displayTypes || [] };
+        }
+    } else {
+        const result = await chat.sendMessage({ message: fullPrompt });
+        console.log('--- AI Raw Response (Gemini) ---');
+        console.log(JSON.stringify(result, null, 2));
+        console.log('---------------------------------');
+        const fullResponseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+        yield { type: 'chunk', content: fullResponseText };
+        if (config.displayTokenConsumption?.enabled && result.usageMetadata) {
+            yield { type: 'token', usage: result.usageMetadata, displayTypes: config.displayTokenConsumption.displayTypes || [] };
+        }
+    }
+}
+
+async function* generateOpenAIResponseStream(
+    fullPrompt: string,
+    truncatedHistory: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
+): AsyncGenerator<StreamEvent> {
+    const modelName = config.openaiParameters?.model || 'gpt-4-turbo';
+    const { temperature, topP } = config.openaiParameters || {};
+
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+    if (systemInstruction) {
+        messages.push({ role: 'system', content: systemInstruction });
+    }
+    messages.push(...truncatedHistory, { role: 'user', content: fullPrompt });
+
+    console.log('--- AI Request Body (OpenAI) ---');
+    console.log(JSON.stringify({ model: modelName, messages, temperature, topP }, null, 2));
+    console.log('--------------------');
+
+    if (config.enableStreaming) {
+        const stream = await openai.chat.completions.create({
+            model: modelName,
+            messages: messages,
+            temperature: temperature,
+            top_p: topP,
+            stream: true,
+        });
+        for await (const chunk of stream) {
+            console.log('--- AI Raw Response Chunk (OpenAI Stream) ---');
+            console.log(JSON.stringify(chunk, null, 2));
+            console.log('---------------------------------');
+            const chunkText = chunk.choices[0]?.delta?.content || '';
+            if (chunkText) yield { type: 'chunk', content: chunkText };
+        }
+        // Note: OpenAI streaming API doesn't provide token usage details in the same way as Gemini.
+        // It might be in the last chunk, or require a separate non-streaming call to estimate.
+        // For now, we are not yielding a 'token' event for OpenAI stream.
+    } else {
+        const completion = await openai.chat.completions.create({
+            model: modelName,
+            messages: messages,
+            temperature: temperature,
+            top_p: topP,
+            stream: false,
+        });
+        console.log('--- AI Raw Response (OpenAI) ---');
+        console.log(JSON.stringify(completion, null, 2));
+        console.log('---------------------------------');
+        const fullResponseText = completion.choices[0]?.message?.content || '';
+        yield { type: 'chunk', content: fullResponseText };
+        if (config.displayTokenConsumption?.enabled && completion.usage) {
+            const usage = {
+                promptTokenCount: completion.usage.prompt_tokens,
+                candidatesTokenCount: completion.usage.completion_tokens,
+                totalTokenCount: completion.usage.total_tokens
+            };
+            yield { type: 'token', usage, displayTypes: config.displayTokenConsumption.displayTypes || [] };
+        }
+    }
+}
+
+
 export async function* generateChatResponseStream(
     message: string,
     projectPath: string,
     userMessageId: number,
     clientHistory: any[] // Comes from frontend state
 ): AsyncGenerator<StreamEvent> {
-    const backupName = `${new Date().toISOString().replace(/[:.]/g, '-')}_initial`;
-    const { created, folderName } = await createBackup(projectPath, backupName);
-
-    if (created && folderName) {
-        yield { type: 'backup', message: `初始项目状态已存档于 ${folderName}`, backupFolderName: folderName, userMessageId };
-    }
-
-    if (!genAI) {
-        await initializeChat();
-    }
-
     try {
+        const backupName = `${new Date().toISOString().replace(/[:.]/g, '-')}_initial`;
+        const { created, folderName } = await createBackup(projectPath, backupName);
+        if (created && folderName) {
+            yield { type: 'backup', message: `初始项目状态已存档于 ${folderName}`, backupFolderName: folderName, userMessageId };
+        }
+
+        if (!genAI && !openai) {
+            await initializeChat();
+        }
+
         const { summary, includedFiles } = await createProjectSummary(projectPath, true);
         const fullPrompt = `${summary}\n\n---User Instruction---\n${message}`;
         yield { type: 'files', files: includedFiles, fullPrompt };
 
-        // Exclude the last message from clientHistory, as it's the current user prompt
-        // which is being combined with the file context in fullPrompt.
         const historyForContext = clientHistory.slice(0, -1);
-        const chatHistory = mapMessagesToContent(historyForContext);
-        const processedHistory = await getProcessedHistory(projectPath, chatHistory);
-        const truncatedHistory = getTruncatedHistory(processedHistory);
+        const provider = config.apiProvider || 'gemini';
 
-        const modelName = config.modelParameters?.model || 'gemini-1.5-flash';
-        const { temperature, topP, topK } = config.modelParameters || {};
-
-        const generationConfig: { temperature?: number; topP?: number; topK?: number } = {};
-        if (temperature !== undefined) generationConfig.temperature = temperature;
-        if (topP !== undefined) generationConfig.topP = topP;
-        if (topK !== undefined) generationConfig.topK = topK;
-
-        const fullRequestForLogging = {
-            model: modelName,
-            contents: [
-                ...truncatedHistory,
-                { role: 'user', parts: [{ text: fullPrompt }] }
-            ],
-            systemInstruction: systemInstruction,
-            generationConfig: generationConfig
-        };
-
-        console.log('--- AI Request Body ---');
-        console.log(JSON.stringify(fullRequestForLogging, null, 2));
-        console.log('--------------------');
-
-        const chat = genAI.chats.create({
-            model: modelName,
-            history: truncatedHistory,
-            config: {
-                systemInstruction: systemInstruction,
-                ...generationConfig
-            },
-        });
-
-        let fullResponseText = '';
-        if (config.enableStreaming) {
-            const stream = await chat.sendMessageStream({ message: fullPrompt });
-            let usageMetadata;
-            for await (const chunk of stream) {
-                const chunkText = chunk.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-                if (chunkText) {
-                    fullResponseText += chunkText;
-                    yield { type: 'chunk', content: chunkText };
-                }
-                if (chunk.usageMetadata) {
-                    usageMetadata = chunk.usageMetadata;
-                }
+        if (provider === 'gemini') {
+            const chatHistory = mapMessagesToContent(historyForContext);
+            const processedHistory = await getProcessedHistory(projectPath, chatHistory);
+            const truncatedHistory = getTruncatedHistory(processedHistory);
+            yield* generateGeminiResponseStream(fullPrompt, truncatedHistory);
+        } else { // openai
+            const chatHistory = mapMessagesToOpenAIFormat(historyForContext);
+            // Note: History processing/simplification is currently only implemented for Gemini format.
+            // For OpenAI, we will use a simple truncation for now.
+            const maxTurns = config.maxContextHistoryTurns ?? -1;
+            let truncatedHistory: OpenAI.Chat.Completions.ChatCompletionMessageParam[];
+            if (maxTurns === 0) {
+                truncatedHistory = [];
+            } else if (maxTurns > 0) {
+                const userTurnIndices = chatHistory.reduce((acc, msg, i) => {
+                    if (msg.role === 'user') acc.push(i);
+                    return acc;
+                }, [] as number[]);
+                const startIndex = Math.max(0, userTurnIndices.length - maxTurns);
+                const actualStartIndex = userTurnIndices[startIndex];
+                truncatedHistory = chatHistory.slice(actualStartIndex);
+            } else {
+                truncatedHistory = chatHistory; // maxTurns === -1
             }
-            if (config.displayTokenConsumption?.enabled && usageMetadata) {
-                yield { type: 'token', usage: usageMetadata, displayTypes: config.displayTokenConsumption.displayTypes || [] };
-            }
-        } else {
-            const result = await chat.sendMessage({ message: fullPrompt });
-            fullResponseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-            yield { type: 'chunk', content: fullResponseText };
-            if (config.displayTokenConsumption?.enabled && result.usageMetadata) {
-                yield { type: 'token', usage: result.usageMetadata, displayTypes: config.displayTokenConsumption.displayTypes || [] };
-            }
+            yield* generateOpenAIResponseStream(fullPrompt, truncatedHistory);
         }
-        // No longer manually update history here; frontend is the source of truth.
     } catch (error: any) {
-        console.error("Error calling Google AI:", error);
+        console.error(`Error calling AI (${config.apiProvider || 'gemini'}):`, error);
         yield { type: 'error', message: `Sorry, I encountered an error: ${error.message}` };
     }
 }
