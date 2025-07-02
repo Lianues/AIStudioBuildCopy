@@ -6,6 +6,9 @@
 /backups
 /history
 /project/天体
+/project/test.ts
+
+
 # Log files
 npm-debug.log*
 yarn-debug.log*
