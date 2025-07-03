@@ -1,8 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { XMLParser } from 'fast-xml-parser';
-import { FileChange } from './aiService'; // Import FileChange interface
+import { FileChange } from './aiService';
 import { createBackup } from './archiver';
+import { replaceBlockByPath } from './astService';
 
 export interface ChangeDetail {
     file: string;
@@ -11,11 +11,11 @@ export interface ChangeDetail {
 }
 
 /**
- * Parses an XML string containing file modification instructions and applies them to the file system.
+ * Applies a series of file changes, using AST-based block replacement for updates.
  *
- * @param xmlString The XML string with change instructions.
+ * @param changes An array of file change instructions.
  * @param baseDirectory The base directory where changes will be applied.
- * @returns A promise that resolves to an array of change details.
+ * @returns A promise that resolves to an object containing applied changes and backup info.
  */
 export async function applyChanges(
     changes: FileChange[],
@@ -25,11 +25,13 @@ export async function applyChanges(
     let backupCreated = false;
     let backupFolderName: string | null = null;
 
+    const fileContentCache = new Map<string, string>();
+
     for (const change of changes) {
-        const { type, file, description, content } = change;
+        const { type, file, description, content, blockPath } = change;
 
         if (!file) {
-            console.warn('跳过无效的变更元素 (缺少文件路径):', change);
+            console.warn('Skipping invalid change object (missing file path):', change);
             continue;
         }
 
@@ -40,27 +42,50 @@ export async function applyChanges(
                 try {
                     await fs.access(fullPath);
                     await fs.unlink(fullPath);
-                    console.log(`已删除文件: ${fullPath}`);
+                    console.log(`Deleted file: ${fullPath}`);
                 } catch (accessError) {
-                    console.warn(`未找到要删除的文件，已跳过: ${fullPath}`);
+                    console.warn(`File to delete not found, skipped: ${fullPath}`);
                 }
             } else { // 'update'
                 if (content === undefined) {
-                    console.warn(`由于缺少 'update' 操作的内容, 跳过对 ${file} 的更改。`);
+                    console.warn(`Skipping update for ${file} due to missing content.`);
                     continue;
                 }
-                await fs.mkdir(path.dirname(fullPath), { recursive: true });
-                await fs.writeFile(fullPath, content, 'utf-8');
+
+                // Strategy dispatch: Check for full-file vs block-based change
+                if (blockPath === '$fullfile') {
+                    // --- Full-file change (for non-parsable files) ---
+                    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+                    await fs.writeFile(fullPath, content, 'utf-8');
+                    fileContentCache.set(fullPath, content);
+
+                } else if (blockPath) {
+                    // --- Block-based change (for parsable files) ---
+                    let originalContent = fileContentCache.get(fullPath);
+                    if (originalContent === undefined) {
+                        originalContent = await fs.readFile(fullPath, 'utf-8');
+                        fileContentCache.set(fullPath, originalContent);
+                    }
+                    const newContent = replaceBlockByPath(originalContent, blockPath, content);
+                    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+                    await fs.writeFile(fullPath, newContent, 'utf-8');
+                    fileContentCache.set(fullPath, newContent);
+                } else {
+                    // --- Full-file change (legacy or when no block path is provided) ---
+                    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+                    await fs.writeFile(fullPath, content, 'utf-8');
+                    fileContentCache.set(fullPath, content);
+                }
             }
             
             appliedChanges.push({
                 file: file,
-                description: description,
+                description: description || '',
                 fullPath: fullPath,
             });
 
         } catch (fileError) {
-            console.error(`未能将变更应用到文件: ${fullPath}`, fileError);
+            console.error(`Failed to apply changes to file: ${fullPath}`, fileError);
         }
     }
 

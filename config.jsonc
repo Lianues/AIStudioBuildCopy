@@ -22,18 +22,27 @@
   "optimizeCodeContext": true,
   // 控制是否启用流式响应，以实时接收AI返回的内容
   "enableStreaming": true,
+  // 代码修改策略
+  // "full": AI将返回完整的、被修改过的文件内容进行全文替换（传统方式）。
+  // "block": AI将只返回被修改的代码块，由后端通过AST进行精准替换（实验性）。
+  "codeChangeStrategy": "block",
   // AI模型参数配置
   "modelParameters": {
     // 要使用的AI模型, 例如 "gemini-1.5-flash", "gemini-2.5-flash" 等
-    "model": "gemini-2.5-pro",
+    "model": "gemini-2.5-flash",
     // 生成文本的温度，值越高，创造性越强 (Gemini 范围: 0.0 - 2.0)
     "temperature": 0.1,
     // Top-p (nucleus) aampling 的参数 (Gemini 范围: 0.0 - 1.0)
     "topP": 0.95,
     // Top-k sampling 的参数
     "topK": 40,
-    // 系统提示词文件的路径，用于指导AI的行为。留空则不使用系统提示词
-    "systemPromptPath": "SystemPrompt/ai的TS系统提示词.md"
+    // 不同代码修改策略对应的系统提示词
+    "prompts": {
+      // “全文替换”策略使用的提示词
+      "full": "SystemPrompt/ai的TS系统提示词.md",
+      // “块级替换”策略使用的提示词
+      "block": "SystemPrompt/ai_block_level_ts_prompt.md"
+    }
   },
   // OpenAI API 参数配置
   "openaiParameters": {
@@ -45,7 +54,12 @@
     "temperature": 0.1,
     // Top-p (nucleus) sampling 的参数
     "topP": 0.95,
-    // 系统提示词文件的路径，用于指导AI的行为。留空则不使用系统提示词
-    "systemPromptPath": "SystemPrompt/ai的TS系统提示词.md"
+    // 不同代码修改策略对应的系统提示词
+    "prompts": {
+      // “全文替换”策略使用的提示词
+      "full": "SystemPrompt/ai的TS系统提示词.md",
+      // “块级替换”策略使用的提示词
+      "block": "SystemPrompt/ai_block_level_ts_prompt.md"
+    }
   }
 }

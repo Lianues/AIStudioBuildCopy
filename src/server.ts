@@ -23,8 +23,9 @@ app.use(express.urlencoded({ limit: '10gb', extended: true }));
 
 app.get('/api/events', sse.init);
 
-const projectDir = path.resolve(__dirname, '..', 'project');
-const historyDir = path.resolve(__dirname, '..', 'history');
+const rootDir = path.resolve(__dirname, '..');
+const projectDir = path.join(rootDir, 'project');
+const historyDir = path.join(rootDir, 'history');
 
 // Ensure history directory exists
 fs.mkdir(historyDir, { recursive: true });
@@ -211,7 +212,9 @@ const aiChatHandler: RequestHandler = async (req, res): Promise<void> => {
   };
 
   try {
-    const stream = aiService.generateChatResponseStream(message, projectDir, userMessageId, history);
+    // Determine if this is the first message of a new chat session
+    const isFirstMessage = history.length === 1;
+    const stream = aiService.generateChatResponseStream(message, projectDir, userMessageId, history, rootDir, isFirstMessage);
     for await (const event of stream) {
       sendEvent(event.type, event);
     }
@@ -236,13 +239,26 @@ const applyChangesHandler: RequestHandler = async (req, res): Promise<void> => {
 
   try {
     const { appliedChanges, backupCreated, backupFolderName } = await applyChanges(changes, projectDir);
+    
+    // Send success response FIRST, to unblock the frontend UI
+    res.json({ success: true, message: 'Changes applied successfully.', appliedChanges });
+
+    // THEN, perform non-blocking post-change actions
     if (backupCreated && backupFolderName) {
       sse.send({ type: 'backup', message: `AI 修改已应用并存档于 ${backupFolderName}`, backupFolderName: backupFolderName });
     }
-    res.json({ success: true, message: 'Changes applied successfully.', appliedChanges });
+    
+    // Run diagnostics AFTER the response has been sent
+    if (appliedChanges.length > 0) {
+        runDiagnosticsAndNotify();
+    }
+
   } catch (error) {
     console.error('Failed to apply changes:', error);
-    res.status(500).json({ error: 'Failed to apply changes' });
+    // Ensure a response is sent even on error
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to apply changes' });
+    }
   }
 };
 
@@ -304,25 +320,10 @@ async function startServer() {
   };
 
   watcher
-    .on('add', (absolutePath) => {
-      sendSseEvent('add', absolutePath);
-      if (absolutePath.endsWith('.ts') || absolutePath.endsWith('.tsx')) {
-        runDiagnosticsAndNotify();
-      }
-    })
+    .on('add', (absolutePath) => sendSseEvent('add', absolutePath))
     .on('addDir', (absolutePath) => sendSseEvent('add', absolutePath))
-    .on('change', (absolutePath) => {
-      sendSseEvent('change', absolutePath);
-      if (absolutePath.endsWith('.ts') || absolutePath.endsWith('.tsx')) {
-        runDiagnosticsAndNotify();
-      }
-    })
-    .on('unlink', (absolutePath) => {
-      sendSseEvent('unlink', absolutePath);
-      if (absolutePath.endsWith('.ts') || absolutePath.endsWith('.tsx')) {
-        runDiagnosticsAndNotify();
-      }
-    })
+    .on('change', (absolutePath) => sendSseEvent('change', absolutePath))
+    .on('unlink', (absolutePath) => sendSseEvent('unlink', absolutePath))
     .on('unlinkDir', (absolutePath) => sendSseEvent('unlink', absolutePath));
 
   const gracefulShutdown = (signal: string) => {

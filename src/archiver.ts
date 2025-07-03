@@ -83,18 +83,19 @@ async function areDirectoriesEqual(projectPath: string, backupPath: string, proj
     }
 }
 
-export async function createBackup(projectPath: string, backupFolderName: string): Promise<{created: boolean, folderName: string | null}> {
+export async function createBackup(projectPath: string, backupFolderName: string, force: boolean = false): Promise<{created: boolean, folderName: string | null}> {
     const backupRoot = path.join(path.dirname(projectPath), 'backups');
     const ig = await getIgnoreInstance(projectPath);
     const filesToBackup = await listFiles(projectPath, projectPath, ig);
     
-    const latestBackupDir = await getLatestBackupDir(backupRoot);
-
-    if (latestBackupDir) {
-        const isEqual = await areDirectoriesEqual(projectPath, latestBackupDir, filesToBackup);
-        if (isEqual) {
-            console.log("No changes detected. Skipping backup.");
-            return { created: false, folderName: null };
+    if (!force) {
+        const latestBackupDir = await getLatestBackupDir(backupRoot);
+        if (latestBackupDir) {
+            const isEqual = await areDirectoriesEqual(projectPath, latestBackupDir, filesToBackup);
+            if (isEqual) {
+                console.log("No changes detected. Skipping backup.");
+                return { created: false, folderName: null };
+            }
         }
     }
 

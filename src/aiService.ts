@@ -9,8 +9,9 @@ import { XMLParser } from 'fast-xml-parser';
 import 'dotenv/config';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { createProjectSummary } from './projectReader';
+import { createProjectSummary, getFileContent } from './projectReader';
 import { createBackup } from './archiver';
+import { getNavigationalPaths } from './astService';
 
 //<--- 新增配置接口和加载函数 --->
 interface Config {
@@ -22,27 +23,34 @@ interface Config {
     maxContextHistoryTurns?: number;
     optimizeCodeContext?: boolean;
     enableStreaming?: boolean;
-    modelParameters?: { // Gemini-specific
+    codeChangeStrategy?: 'full' | 'block';
+    modelParameters?: {
         model: string;
         temperature: number;
         topP?: number;
         topK?: number;
-        systemPromptPath: string;
+        prompts: {
+            full: string;
+            block: string;
+        };
     };
-    openaiParameters?: { // OpenAI-specific
+    openaiParameters?: {
         baseURL: string;
         model: string;
         temperature: number;
         topP?: number;
-        systemPromptPath: string;
+        prompts: {
+            full: string;
+            block: string;
+        };
     };
 }
 
 let config: Config = {};
 
-async function loadConfig(): Promise<void> {
+async function loadConfig(rootDir: string): Promise<void> {
     try {
-        const configPath = path.join(process.cwd(), 'config.jsonc');
+        const configPath = path.join(rootDir, 'config.jsonc');
         const configFileContent = await fs.readFile(configPath, 'utf-8');
         const contentWithoutComments = configFileContent.replace(/(?<!:)\/\/.*$|\/\*[\s\S]*?\*\//gm, '');
         config = JSON.parse(contentWithoutComments);
@@ -52,13 +60,17 @@ async function loadConfig(): Promise<void> {
             enableStreaming: true,
             maxContextHistoryTurns: -1,
             optimizeCodeContext: true,
+            codeChangeStrategy: 'full',
             displayTokenConsumption: { enabled: true, displayTypes: ["total"] },
             modelParameters: {
                 model: "gemini-2.5-flash",
                 temperature: 0.1,
                 topP: 0.95,
                 topK: 40,
-                systemPromptPath: "SystemPrompt/ai的TS系统提示词.md"
+                prompts: {
+                    full: "SystemPrompt/ai的TS系统提示词.md",
+                    block: "SystemPrompt/ai_block_level_ts_prompt.md"
+                }
             }
         };
     }
@@ -75,11 +87,17 @@ export function extractXml(text: string): string {
     return match ? match[1].trim() : '';
 }
 
+// This interface now supports both full and block-based changes.
 export interface FileChange {
     type: 'update' | 'delete';
     file: string;
-    description: string;
+    description?: string;
+    
+    // For 'full' strategy
     content?: string;
+    
+    // For 'block' strategy
+    blockPath?: string;
 }
 
 // Map frontend message format to AI Content format
@@ -96,8 +114,8 @@ let genAI: GoogleGenAI;
 let openai: OpenAI;
 let systemInstruction: string;
 
-async function initializeChat(): Promise<void> {
-    await loadConfig();
+async function initializeChat(rootDir: string): Promise<void> {
+    await loadConfig(rootDir);
     
     const provider = config.apiProvider || 'gemini';
     console.log(`Initializing AI service with provider: ${provider}`);
@@ -120,13 +138,13 @@ async function initializeChat(): Promise<void> {
     }
 
     systemInstruction = ''; // Default to empty string
-    const systemPromptPath = provider === 'gemini'
-        ? config.modelParameters?.systemPromptPath
-        : config.openaiParameters?.systemPromptPath;
+    const strategy = config.codeChangeStrategy || 'full';
+    const params = provider === 'gemini' ? config.modelParameters : config.openaiParameters;
+    const systemPromptPath = params?.prompts?.[strategy];
 
     if (systemPromptPath) {
         try {
-            const fullPath = path.join(process.cwd(), systemPromptPath);
+            const fullPath = path.join(rootDir, systemPromptPath);
             systemInstruction = await fs.readFile(fullPath, 'utf-8');
             console.log(`System prompt loaded successfully from: ${systemPromptPath}`);
         } catch (error: any) {
@@ -136,17 +154,27 @@ async function initializeChat(): Promise<void> {
 }
 
 //<--- 新增历史记录简化逻辑 --->
-function parseUserMessageForFiles(messageText: string): { [filePath: string]: string } {
-    const fileContentsMap: { [filePath: string]: string } = {};
+interface HistoricalFileData {
+    [filePath: string]: {
+        content: string;
+        navMap?: string;
+    };
+}
+
+function parseUserMessageForFiles(messageText: string): HistoricalFileData {
+    const fileContentsMap: HistoricalFileData = {};
     if (!messageText.startsWith('These are the existing files in the app:')) {
         return fileContentsMap;
     }
-    const fileBlockRegex = /--- START OF FILE (.*?) ---\n([\s\S]*?)(?=\n--- START OF FILE|\n\n---User Instruction---|$)/g;
+    const fileBlockRegex = /--- START OF FILE (.*?) ---\n([\s\S]*?)(?:\n\n--- AVAILABLE CODE BLOCK PATHS for \1 ---\n([\s\S]*?))?(?=\n\n--- START OF FILE|\n\n---User Instruction---|$)/g;
+
     let match;
     while ((match = fileBlockRegex.exec(messageText)) !== null) {
         const filePath = match[1].trim();
         const content = match[2].trim().replace(/\r\n/g, '\n');
-        fileContentsMap[filePath] = content;
+        const navMap = match[3] ? match[3].trim().replace(/\r\n/g, '\n') : undefined;
+        
+        fileContentsMap[filePath] = { content, navMap };
     }
     return fileContentsMap;
 }
@@ -158,6 +186,19 @@ async function getProcessedHistory(projectPath: string, history: Content[]): Pro
     }
 
     const { fileContentsMap } = await createProjectSummary(projectPath, false);
+    const currentNavMaps: { [filePath: string]: string | undefined } = {};
+    const parsableExtensions = ['.ts', '.tsx', '.js', '.jsx'];
+
+    for (const filePath in fileContentsMap) {
+        if (parsableExtensions.some(ext => filePath.endsWith(ext))) {
+            try {
+                currentNavMaps[filePath] = getNavigationalPaths(fileContentsMap[filePath]).join('\n');
+            } catch (e) {
+                currentNavMaps[filePath] = undefined; // Parsing failed
+            }
+        }
+    }
+    
     let processedHistory: Content[] = [...currentHistory];
 
     for (let i = currentHistory.length - 1; i >= 0; i--) {
@@ -202,8 +243,14 @@ async function getProcessedHistory(projectPath: string, history: Content[]): Pro
             } else {
                 for (const key of historicalKeys) {
                     const currentContent = fileContentsMap[key]?.trim().replace(/\r\n/g, '\n');
-                    const historicalContent = historicalFileMap[key];
+                    const historicalContent = historicalFileMap[key].content;
                     if (currentContent !== historicalContent) {
+                        allFilesMatch = false;
+                        break;
+                    }
+                    const currentNavMap = currentNavMaps[key];
+                    const historicalNavMap = historicalFileMap[key].navMap;
+                    if (currentNavMap !== historicalNavMap) {
                         allFilesMatch = false;
                         break;
                     }
@@ -214,9 +261,13 @@ async function getProcessedHistory(projectPath: string, history: Content[]): Pro
                 const instructionMatch = messageText.match(/---User Instruction---([\s\S]*)/);
                 const userInstruction = instructionMatch ? instructionMatch[1].trim() : '';
                 
-                const fileSummaryBlocks = historicalKeys.map(filePath =>
-                    `--- START OF FILE ${filePath} ---\n[代码内容与当前上下文一致]`
-                ).join('\n\n');
+                const fileSummaryBlocks = historicalKeys.map(filePath => {
+                    let block = `--- START OF FILE ${filePath} ---\n[代码内容与当前上下文一致]`;
+                    if (historicalFileMap[filePath].navMap !== undefined) {
+                        block += `\n\n--- AVAILABLE CODE BLOCK PATHS for ${filePath} ---\n[导航地图与当前上下文一致]`;
+                    }
+                    return block;
+                }).join('\n\n');
 
                 const modifiedUserText = `These are the existing files in the app:\n${fileSummaryBlocks}\n\n---User Instruction---\n${userInstruction}`;
                 processedHistory[i] = { ...message, parts: [{ text: modifiedUserText }] };
@@ -248,6 +299,127 @@ function getTruncatedHistory(processedHistory: Content[]): Content[] {
         return processedHistory.slice(actualStartHistoryIndex);
     }
     return processedHistory; // maxTurns === -1
+}
+
+async function getProcessedHistoryForOpenAI(projectPath: string, history: OpenAI.Chat.Completions.ChatCompletionMessageParam[]): Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]> {
+    const currentHistory = history;
+    if (!config.optimizeCodeContext || currentHistory.length === 0) {
+        return currentHistory;
+    }
+
+    const { fileContentsMap } = await createProjectSummary(projectPath, false);
+    const currentNavMaps: { [filePath: string]: string | undefined } = {};
+    const parsableExtensions = ['.ts', '.tsx', '.js', '.jsx'];
+
+    for (const filePath in fileContentsMap) {
+        if (parsableExtensions.some(ext => filePath.endsWith(ext))) {
+            try {
+                currentNavMaps[filePath] = getNavigationalPaths(fileContentsMap[filePath]).join('\n');
+            } catch (e) {
+                currentNavMaps[filePath] = undefined; // Parsing failed
+            }
+        }
+    }
+
+    let processedHistory = [...currentHistory];
+
+    for (let i = currentHistory.length - 1; i >= 0; i--) {
+        const message = currentHistory[i];
+        const messageText = typeof message.content === 'string' ? message.content : '';
+        if (!messageText) continue;
+
+        let allFilesMatch = true;
+        let stopRecursion = false;
+
+        if (message.role === 'assistant') {
+            const extractedXml = extractXml(messageText);
+            if (!extractedXml) continue;
+            const changesInResponse = parseXmlChanges(extractedXml);
+            if (changesInResponse.length === 0) continue;
+
+            for (const change of changesInResponse) {
+                const currentFileContent = fileContentsMap[change.file]?.trim().replace(/\r\n/g, '\n');
+                const responseFileContent = String(change.content).trim().replace(/\r\n/g, '\n');
+                if (currentFileContent === undefined || currentFileContent !== responseFileContent) {
+                    allFilesMatch = false;
+                    break;
+                }
+            }
+
+            if (allFilesMatch) {
+                const simplifiedXml = `<changes><change><file>multiple</file><description>与当前代码一致</description><content><![CDATA[用户已应用本次修改]]></content></change></changes>`;
+                const modifiedModelText = messageText.replace(extractedXml, simplifiedXml);
+                processedHistory[i] = { ...message, content: modifiedModelText };
+            } else {
+                stopRecursion = true;
+            }
+        } else if (message.role === 'user') {
+            const historicalFileMap = parseUserMessageForFiles(messageText);
+            const historicalKeys = Object.keys(historicalFileMap).sort();
+            const currentKeys = Object.keys(fileContentsMap).sort();
+
+            if (historicalKeys.length === 0) continue;
+
+            if (historicalKeys.length !== currentKeys.length || JSON.stringify(historicalKeys) !== JSON.stringify(currentKeys)) {
+                allFilesMatch = false;
+            } else {
+                for (const key of historicalKeys) {
+                    const currentContent = fileContentsMap[key]?.trim().replace(/\r\n/g, '\n');
+                    const historicalContent = historicalFileMap[key].content;
+                    if (currentContent !== historicalContent) {
+                        allFilesMatch = false;
+                        break;
+                    }
+                    const currentNavMap = currentNavMaps[key];
+                    const historicalNavMap = historicalFileMap[key].navMap;
+                    if (currentNavMap !== historicalNavMap) {
+                        allFilesMatch = false;
+                        break;
+                    }
+                }
+            }
+
+            if (allFilesMatch) {
+                const instructionMatch = messageText.match(/---User Instruction---([\s\S]*)/);
+                const userInstruction = instructionMatch ? instructionMatch[1].trim() : '';
+                
+                const fileSummaryBlocks = historicalKeys.map(filePath => {
+                    let block = `--- START OF FILE ${filePath} ---\n[代码内容与当前上下文一致]`;
+                    if (historicalFileMap[filePath].navMap !== undefined) {
+                        block += `\n\n--- AVAILABLE CODE BLOCK PATHS for ${filePath} ---\n[导航地图与当前上下文一致]`;
+                    }
+                    return block;
+                }).join('\n\n');
+
+                const modifiedUserText = `These are the existing files in the app:\n${fileSummaryBlocks}\n\n---User Instruction---\n${userInstruction}`;
+                processedHistory[i] = { ...message, content: modifiedUserText };
+            } else {
+                stopRecursion = true;
+            }
+        }
+
+        if (stopRecursion) {
+            break;
+        }
+    }
+    return processedHistory;
+}
+
+function getTruncatedHistoryForOpenAI(processedHistory: OpenAI.Chat.Completions.ChatCompletionMessageParam[]): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+    const maxTurns = config.maxContextHistoryTurns ?? -1;
+    if (maxTurns === 0) {
+        return [];
+    } else if (maxTurns > 0) {
+        const userTurnIndices = processedHistory.reduce((acc, msg, i) => {
+            if (msg.role === 'user') acc.push(i);
+            return acc;
+        }, [] as number[]);
+        
+        const startIndexInUserIndices = Math.max(0, userTurnIndices.length - maxTurns);
+        const actualStartHistoryIndex = userTurnIndices[startIndexInUserIndices];
+        return processedHistory.slice(actualStartHistoryIndex);
+    }
+    return processedHistory;
 }
 //<--- 结束新增部分 --->
 
@@ -382,21 +554,61 @@ export async function* generateChatResponseStream(
     message: string,
     projectPath: string,
     userMessageId: number,
-    clientHistory: any[] // Comes from frontend state
+    clientHistory: any[], // Comes from frontend state
+    rootDir: string,
+    forceBackup: boolean = false
 ): AsyncGenerator<StreamEvent> {
     try {
         const backupName = `${new Date().toISOString().replace(/[:.]/g, '-')}_initial`;
-        const { created, folderName } = await createBackup(projectPath, backupName);
+        const { created, folderName } = await createBackup(projectPath, backupName, forceBackup);
         if (created && folderName) {
             yield { type: 'backup', message: `初始项目状态已存档于 ${folderName}`, backupFolderName: folderName, userMessageId };
         }
 
         if (!genAI && !openai) {
-            await initializeChat();
+            await initializeChat(rootDir);
         }
 
-        const { summary, includedFiles } = await createProjectSummary(projectPath, true);
-        const fullPrompt = `${summary}\n\n---User Instruction---\n${message}`;
+        let fullPrompt = '';
+        let includedFiles: string[] = [];
+
+        if (config.codeChangeStrategy === 'block') {
+            const { summary, includedFiles: files, fileContentsMap } = await createProjectSummary(projectPath, true);
+            
+            const summaryWithNavPaths = await Promise.all(Object.keys(fileContentsMap).map(async (filePath) => {
+                const content = fileContentsMap[filePath];
+                const fileBlock = `--- START OF FILE ${filePath} ---\n${content}`;
+                
+                const parsableExtensions = ['.ts', '.tsx', '.js', '.jsx'];
+                let navPaths: string[];
+                let canParse = parsableExtensions.some(ext => filePath.endsWith(ext));
+
+                if (canParse) {
+                    try {
+                        navPaths = getNavigationalPaths(content);
+                    } catch (error: any) {
+                        console.warn(`AST parsing failed for ${filePath}, falling back to full file mode. Error: ${error.message}`);
+                        navPaths = ['$fullfile'];
+                    }
+                } else {
+                    navPaths = ['$fullfile'];
+                }
+
+                const navPathsBlock = `--- AVAILABLE CODE BLOCK PATHS for ${filePath} ---\n${navPaths.join('\n')}`;
+                return `${fileBlock}\n\n${navPathsBlock}`;
+            }));
+
+            const fullContext = `These are the existing files in the app:\n${summaryWithNavPaths.join('\n\n')}`;
+            fullPrompt = `${fullContext}\n\n---User Instruction---\n${message}`;
+            includedFiles = files;
+
+        } else {
+            // --- Full-file Logic ---
+            const { summary, includedFiles: files } = await createProjectSummary(projectPath, true);
+            fullPrompt = `${summary}\n\n---User Instruction---\n${message}`;
+            includedFiles = files;
+        }
+        
         yield { type: 'files', files: includedFiles, fullPrompt };
 
         const historyForContext = clientHistory.slice(0, -1);
@@ -409,23 +621,8 @@ export async function* generateChatResponseStream(
             yield* generateGeminiResponseStream(fullPrompt, truncatedHistory);
         } else { // openai
             const chatHistory = mapMessagesToOpenAIFormat(historyForContext);
-            // Note: History processing/simplification is currently only implemented for Gemini format.
-            // For OpenAI, we will use a simple truncation for now.
-            const maxTurns = config.maxContextHistoryTurns ?? -1;
-            let truncatedHistory: OpenAI.Chat.Completions.ChatCompletionMessageParam[];
-            if (maxTurns === 0) {
-                truncatedHistory = [];
-            } else if (maxTurns > 0) {
-                const userTurnIndices = chatHistory.reduce((acc, msg, i) => {
-                    if (msg.role === 'user') acc.push(i);
-                    return acc;
-                }, [] as number[]);
-                const startIndex = Math.max(0, userTurnIndices.length - maxTurns);
-                const actualStartIndex = userTurnIndices[startIndex];
-                truncatedHistory = chatHistory.slice(actualStartIndex);
-            } else {
-                truncatedHistory = chatHistory; // maxTurns === -1
-            }
+            const processedHistory = await getProcessedHistoryForOpenAI(projectPath, chatHistory);
+            const truncatedHistory = getTruncatedHistoryForOpenAI(processedHistory);
             yield* generateOpenAIResponseStream(fullPrompt, truncatedHistory);
         }
     } catch (error: any) {
@@ -437,43 +634,47 @@ export async function* generateChatResponseStream(
 export function parseXmlChanges(xmlString: string): FileChange[] {
     const parser = new XMLParser({
         ignoreAttributes: false,
-        attributeNamePrefix: "", // No prefix for attributes
-        // Stop parsing at the 'content' node to treat its value as a raw string.
-        // This robustly handles CDATA and mixed content.
-        stopNodes: ["changes.change.content"],
+        attributeNamePrefix: "",
+        cdataPropName: "__cdata", // Use a property to store CDATA content
     });
 
     const jsonObj = parser.parse(xmlString);
-    const changes = jsonObj.changes.change;
+    const changes = jsonObj.changes;
     if (!changes) return [];
 
-    const changesArray = Array.isArray(changes) ? changes : [changes];
+    // Handle block-based format (new structure)
+    if (changes.file_update) {
+        const fileUpdate = Array.isArray(changes.file_update) ? changes.file_update : [changes.file_update];
+        return fileUpdate.flatMap((update: any) => {
+            if (!update.operations || !update.operations.block) return [];
+            const blocks = Array.isArray(update.operations.block) ? update.operations.block : [update.operations.block];
+            return blocks.map((block: any) => {
+                const blockPath = block.path?.__cdata || '';
+                const content = block.content?.__cdata || '';
+                return {
+                    type: 'update',
+                    file: update.file,
+                    description: update.description,
+                    blockPath: blockPath,
+                    content: content,
+                };
+            });
+        });
+    }
 
-    return changesArray.map((change: any) => {
-        // Default type to 'update' if not specified
-        const type = change.type || 'update';
-        
-        // With the stopNodes option, change.content is now guaranteed to be a string.
-        let contentValue = change.content;
+    // Handle legacy full-file format
+    if (changes.change) {
+         const changesArray = Array.isArray(changes.change) ? changes.change : [changes.change];
+         return changesArray.map((change: any) => {
+            const fileChange: FileChange = {
+                type: change.type || 'update',
+                file: change.file,
+                description: change.description,
+                content: change.__cdata || '', // Handle empty files
+            };
+            return fileChange;
+        });
+    }
 
-        // Strip CDATA wrapper if it exists
-        if (typeof contentValue === 'string') {
-            const cdataMatch = contentValue.match(/^<!\[CDATA\[([\s\S]*)\]\]>$/);
-            if (cdataMatch) {
-                contentValue = cdataMatch[1];
-            }
-        }
-
-        const fileChange: FileChange = {
-            type: type,
-            file: change.file,
-            description: change.description,
-        };
-
-        if (contentValue !== undefined) {
-            fileChange.content = contentValue;
-        }
-
-        return fileChange;
-    });
+    return [];
 }

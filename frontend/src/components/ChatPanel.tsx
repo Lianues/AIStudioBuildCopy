@@ -63,34 +63,114 @@ const FilesCard = ({ files }: { files?: string[] }) => {
 const AIMessageRenderer = React.memo(({ msg, onChangesParsed, historyJustLoaded }: { msg: Message, onChangesParsed: (changes: FileChange[]) => void, historyJustLoaded: boolean }) => {
   const parsedContent = useMemo(() => {
     const text = msg.text;
-    const segments = [];
     const allChanges: FileChange[] = [];
+
     const changesStartTag = '<changes>';
     const changesEndTag = '</changes>';
     const startPos = text.indexOf(changesStartTag);
-    if (startPos === -1) {
-      segments.push({ type: 'text', content: text });
-      return { segments, allChanges };
+    const endPos = text.lastIndexOf(changesEndTag);
+
+    if (startPos === -1 || endPos === -1) {
+      return { segments: [{ type: 'text', content: text }], allChanges: [] };
     }
-    segments.push({ type: 'text', content: text.substring(0, startPos) });
-    const endPos = text.indexOf(changesEndTag, startPos);
-    const changesContent = text.substring(startPos + changesStartTag.length, endPos === -1 ? text.length : endPos);
-    const changeRegex = /<change type="(update|delete)">\s*<file>([\s\S]*?)<\/file>\s*<description>([\s\S]*?)<\/description>([\s\S]*?)<\/change>/g;
-    let match;
-    const parsedChangesInBlock: FileChange[] = [];
-    while ((match = changeRegex.exec(changesContent)) !== null) {
-      const [, type, file, description, innerContent] = match;
-      const contentTag = /<content><!\[CDATA\[([\s\S]*?)\]\]><\/content>/;
-      const contentMatch = innerContent.match(contentTag);
-      const content = contentMatch ? contentMatch[1] : undefined;
-      const change: FileChange = { type: type as 'update' | 'delete', file, description, content };
-      parsedChangesInBlock.push(change);
+
+    const segments = [];
+    const preContent = text.substring(0, startPos);
+    if (preContent) {
+      segments.push({ type: 'text', content: preContent });
     }
-    segments.push({ type: 'changes-block', changes: parsedChangesInBlock });
-    allChanges.push(...parsedChangesInBlock);
-    if (endPos !== -1) {
-      segments.push({ type: 'text', content: text.substring(endPos + changesEndTag.length) });
+
+    const xmlText = text.substring(startPos, endPos + changesEndTag.length);
+
+    try {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlText, "application/xml");
+      const parserError = xmlDoc.querySelector('parsererror');
+      if (parserError) {
+        throw new Error(`XML parsing error: ${parserError.textContent}`);
+      }
+
+      const parsedChangesInBlock: FileChange[] = [];
+      
+      const fileUpdates = xmlDoc.getElementsByTagName('file_update');
+      if (fileUpdates.length > 0) {
+        for (const fileUpdate of Array.from(fileUpdates)) {
+            const fileNode = fileUpdate.querySelector('file');
+            const descriptionNode = fileUpdate.querySelector('description');
+            const operationsNode = fileUpdate.querySelector('operations');
+
+            if (fileNode && descriptionNode && operationsNode) {
+                const filePath = fileNode.textContent || '';
+                const description = descriptionNode.textContent || '';
+                const blocks = operationsNode.getElementsByTagName('block');
+
+                for (const block of Array.from(blocks)) {
+                    const pathNode = block.querySelector('path');
+                    const contentNode = block.querySelector('content');
+                    
+                    // New format: <path> and <content> tags
+                    if (pathNode && contentNode) {
+                        const blockPath = pathNode.textContent || '';
+                        const content = contentNode.textContent || '';
+                         if (blockPath) {
+                            parsedChangesInBlock.push({
+                                type: 'update',
+                                file: filePath,
+                                description: description,
+                                blockPath: blockPath,
+                                content: content,
+                            });
+                        }
+                    } else { 
+                        // Legacy format: name attribute
+                        const blockPath = block.getAttribute('name');
+                        const content = block.textContent;
+                        if (blockPath) {
+                            parsedChangesInBlock.push({
+                                type: 'update',
+                                file: filePath,
+                                description: description,
+                                blockPath: blockPath,
+                                content: content || '',
+                            });
+                        }
+                    }
+                }
+            }
+        }
+      } else {
+        // FALLBACK: Legacy "full" mode parser
+        const legacyChanges = xmlDoc.getElementsByTagName('change');
+        for (const legacyChange of Array.from(legacyChanges)) {
+          const type = legacyChange.getAttribute('type') as 'update' | 'delete';
+          const file = legacyChange.querySelector('file')?.textContent || '';
+          const description = legacyChange.querySelector('description')?.textContent || '';
+          const content = legacyChange.querySelector('content')?.textContent ?? undefined;
+          if (type && file) {
+            parsedChangesInBlock.push({ type, file, description, content });
+          }
+        }
+      }
+
+      if (parsedChangesInBlock.length > 0) {
+        segments.push({ type: 'changes-block', changes: parsedChangesInBlock });
+        allChanges.push(...parsedChangesInBlock);
+      } else {
+        // If parsing succeeds but finds no valid changes, show the original XML
+        segments.push({ type: 'text', content: xmlText });
+      }
+
+    } catch (e) {
+      console.error("Error processing AI response XML:", e);
+      // On error, treat the whole block as text to avoid losing information
+      segments.push({ type: 'text', content: xmlText });
     }
+
+    const postContent = text.substring(endPos + changesEndTag.length);
+    if (postContent) {
+      segments.push({ type: 'text', content: postContent });
+    }
+
     return { segments, allChanges };
   }, [msg.text]);
 
